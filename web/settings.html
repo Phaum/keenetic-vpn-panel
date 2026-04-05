@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Keenetic VPN Panel - Параметры</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body data-page="settings">
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <div class="brand-mark">KV</div>
+          <div>
+            <p class="brand-eyebrow">AdGuard VPN</p>
+            <h1>Keenetic Control</h1>
+            <p class="brand-copy">Мониторинг, ротация и быстрый доступ к локальной инфраструктуре.</p>
+          </div>
+        </div>
+
+        <nav class="nav-list">
+          <a href="/index.html" class="nav-link" data-nav="dashboard">Обзор</a>
+          <a href="/settings.html" class="nav-link" data-nav="settings">Параметры</a>
+          <a href="/logs.html" class="nav-link" data-nav="logs">Логи</a>
+          <a href="/script.html" class="nav-link" data-nav="script">Shell-скрипт</a>
+        </nav>
+
+        <div class="sidebar-panel">
+          <span class="meta-label">Адрес панели</span>
+          <strong id="sidebar-panel-url">-</strong>
+        </div>
+        <div class="sidebar-panel">
+          <span class="meta-label">Локальных ресурсов</span>
+          <strong id="sidebar-resource-count">-</strong>
+        </div>
+        <div class="sidebar-panel">
+          <span class="meta-label">Последняя рабочая локация</span>
+          <strong id="sidebar-last-good-location">-</strong>
+        </div>
+
+        <section class="sidebar-links-panel">
+          <div class="sidebar-links-head">
+            <span class="meta-label">Ресурсы LAN</span>
+            <a href="#resources-config" class="sidebar-mini-link">Изменить</a>
+          </div>
+          <div id="sidebar-resource-links" class="sidebar-resource-links">
+            <div class="sidebar-resource-empty">Ссылки ещё не добавлены.</div>
+          </div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="topbar-eyebrow">Config center</p>
+            <h2>Настройки панели и сценария</h2>
+            <p class="topbar-copy">
+              Все редактируемые параметры собраны на отдельной странице, включая список ресурсов
+              для бокового меню.
+            </p>
+          </div>
+          <div class="action-cluster">
+            <button class="ghost" id="reload-config">Перечитать конфиг</button>
+          </div>
+        </header>
+
+        <section class="panel">
+          <form id="config-form" class="config-layout">
+            <div class="config-main">
+              <section class="form-block">
+                <div class="block-head">
+                  <h4>Проверка ресурса</h4>
+                </div>
+                <div class="field-grid">
+                  <label>
+                    URL для проверки
+                    <input name="vpn.test_url" type="url" required />
+                  </label>
+                  <label>
+                    Ожидаемый текст
+                    <input name="vpn.expected_text" type="text" required />
+                  </label>
+                  <label>
+                    Количество локаций
+                    <input name="vpn.top_count" type="number" min="1" required />
+                  </label>
+                  <label>
+                    Таймаут запроса
+                    <input name="vpn.timeout" type="number" min="1" required />
+                  </label>
+                  <label>
+                    Таймаут подключения
+                    <input name="vpn.connect_timeout" type="number" min="1" required />
+                  </label>
+                  <label>
+                    Повторные проверки
+                    <input name="vpn.check_retries" type="number" min="1" required />
+                  </label>
+                  <label>
+                    Задержка между проверками
+                    <input name="vpn.check_retry_delay" type="number" min="1" required />
+                  </label>
+                  <label>
+                    Задержка после переключения
+                    <input name="vpn.switch_delay" type="number" min="1" required />
+                  </label>
+                </div>
+              </section>
+
+              <section class="form-block">
+                <div class="block-head">
+                  <h4>Параметры панели</h4>
+                </div>
+                <div class="field-grid">
+                  <label>
+                    Хост панели
+                    <input name="panel.host" type="text" required />
+                  </label>
+                  <label>
+                    Порт панели
+                    <input name="panel.port" type="number" min="1" required />
+                  </label>
+                  <label>
+                    Команда запуска shell-скрипта
+                    <input name="panel.script_runner" type="text" required />
+                  </label>
+                  <label>
+                    Исходный скрипт
+                    <input name="panel.source_script" type="text" required />
+                  </label>
+                  <label class="full-span">
+                    Путь для сгенерированного скрипта
+                    <input name="panel.generated_script" type="text" required />
+                  </label>
+                </div>
+              </section>
+
+              <section class="form-block">
+                <div class="block-head">
+                  <h4>Настройки adguardvpn-cli</h4>
+                </div>
+                <div class="field-grid">
+                  <label class="full-span">
+                    Команда запуска CLI
+                    <input name="adguardvpn.cli_command" type="text" required />
+                  </label>
+                  <label>
+                    Таймаут команды
+                    <input name="adguardvpn.command_timeout" type="number" min="1" required />
+                  </label>
+                  <label>
+                    Лимит локаций
+                    <input name="adguardvpn.locations_limit" type="number" min="1" required />
+                  </label>
+                </div>
+              </section>
+
+              <section class="form-block">
+                <div class="block-head">
+                  <h4>Автозапуск на Keenetic / Entware</h4>
+                  <div class="section-actions">
+                    <button class="ghost small" type="button" id="autostart-refresh-status">Статус</button>
+                    <button class="ghost small" type="button" id="autostart-apply">Применить</button>
+                    <button class="ghost small" type="button" id="autostart-remove">Удалить</button>
+                  </div>
+                </div>
+                <div class="field-grid">
+                  <label class="checkbox-label full-span">
+                    <input name="autostart.enabled" type="checkbox" />
+                    Включать автозапуск и запускать сервис после применения
+                  </label>
+                  <label>
+                    Имя сервиса
+                    <input name="autostart.service_name" type="text" required />
+                  </label>
+                  <label>
+                    Рабочая директория проекта
+                    <input name="autostart.app_dir" type="text" required />
+                  </label>
+                  <label>
+                    Python в Entware
+                    <input name="autostart.python_bin" type="text" required />
+                  </label>
+                  <label>
+                    Лог сервиса
+                    <input name="autostart.log_file" type="text" required />
+                  </label>
+                  <label>
+                    PID-файл
+                    <input name="autostart.pid_file" type="text" required />
+                  </label>
+                  <label>
+                    Путь к стартовому скрипту
+                    <input name="autostart.start_script_path" type="text" required />
+                  </label>
+                  <label class="full-span">
+                    Путь к init-скрипту
+                    <input name="autostart.init_script_path" type="text" required />
+                  </label>
+                </div>
+                <pre id="autostart-output" class="console compact-console">Статус автозапуска ещё не загружен.</pre>
+              </section>
+
+              <section class="form-block">
+                <div class="block-head">
+                  <h4>Служебные файлы</h4>
+                </div>
+                <div class="field-grid">
+                  <label>
+                    Lock-файл
+                    <input name="paths.lock_file" type="text" required />
+                  </label>
+                  <label>
+                    Лог-файл
+                    <input name="paths.log_file" type="text" required />
+                  </label>
+                  <label>
+                    Файл последней удачной локации
+                    <input name="paths.good_file" type="text" required />
+                  </label>
+                  <label>
+                    Временный список локаций
+                    <input name="paths.tmp_file" type="text" required />
+                  </label>
+                  <label class="full-span">
+                    Временный body-файл
+                    <input name="paths.body_file" type="text" required />
+                  </label>
+                </div>
+              </section>
+
+              <section class="form-block" id="resources-config">
+                <div class="block-head">
+                  <h4>Ресурсы для бокового меню</h4>
+                  <button class="ghost small" type="button" id="add-resource">Добавить ссылку</button>
+                </div>
+                <div class="resource-editor" id="resource-editor"></div>
+              </section>
+
+              <div class="form-actions">
+                <button class="primary" type="submit">Сохранить конфиг</button>
+              </div>
+            </div>
+
+            <aside class="config-aside">
+              <section class="side-card">
+                <span class="meta-label">Путь к config.json</span>
+                <strong id="config-path">-</strong>
+              </section>
+              <section class="side-card">
+                <span class="meta-label">URL панели</span>
+                <strong id="aside-panel-url">-</strong>
+              </section>
+              <section class="side-card">
+                <span class="meta-label">Количество ресурсов</span>
+                <strong id="aside-resource-count">-</strong>
+              </section>
+              <section class="side-card">
+                <span class="meta-label">Последний автозапуск</span>
+                <strong id="autostart-last-action">Нет данных</strong>
+              </section>
+              <section class="side-card">
+                <span class="meta-label">Результат операции</span>
+                <pre id="action-output" class="console compact-console">Ожидание действий.</pre>
+              </section>
+            </aside>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

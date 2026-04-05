@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Keenetic VPN Panel - Shell-скрипт</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body data-page="script">
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <div class="brand-mark">KV</div>
+          <div>
+            <p class="brand-eyebrow">AdGuard VPN</p>
+            <h1>Keenetic Control</h1>
+            <p class="brand-copy">Мониторинг, ротация и быстрый доступ к локальной инфраструктуре.</p>
+          </div>
+        </div>
+
+        <nav class="nav-list">
+          <a href="/index.html" class="nav-link" data-nav="dashboard">Обзор</a>
+          <a href="/settings.html" class="nav-link" data-nav="settings">Параметры</a>
+          <a href="/logs.html" class="nav-link" data-nav="logs">Логи</a>
+          <a href="/script.html" class="nav-link" data-nav="script">Shell-скрипт</a>
+        </nav>
+
+        <div class="sidebar-panel">
+          <span class="meta-label">Адрес панели</span>
+          <strong id="sidebar-panel-url">-</strong>
+        </div>
+        <div class="sidebar-panel">
+          <span class="meta-label">Локальных ресурсов</span>
+          <strong id="sidebar-resource-count">-</strong>
+        </div>
+        <div class="sidebar-panel">
+          <span class="meta-label">Последняя рабочая локация</span>
+          <strong id="sidebar-last-good-location">-</strong>
+        </div>
+
+        <section class="sidebar-links-panel">
+          <div class="sidebar-links-head">
+            <span class="meta-label">Ресурсы LAN</span>
+            <a href="/settings.html#resources-config" class="sidebar-mini-link">Изменить</a>
+          </div>
+          <div id="sidebar-resource-links" class="sidebar-resource-links">
+            <div class="sidebar-resource-empty">Ссылки ещё не добавлены.</div>
+          </div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="topbar-eyebrow">Generated shell</p>
+            <h2>Сгенерированный shell-скрипт</h2>
+            <p class="topbar-copy">
+              Здесь можно быстро сверить итоговый сценарий, который будет запускаться для ротации VPN.
+            </p>
+          </div>
+          <div class="action-cluster">
+            <button id="generate-script">Пересобрать скрипт</button>
+            <button class="ghost" id="refresh-script">Обновить содержимое</button>
+          </div>
+        </header>
+
+        <section class="panel">
+          <pre id="script-output" class="console large-console">Скрипт ещё не загружен.</pre>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Keenetic VPN Panel - Обзор</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body data-page="dashboard">
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <div class="brand-mark">KV</div>
+          <div>
+            <p class="brand-eyebrow">AdGuard VPN</p>
+            <h1>Keenetic Control</h1>
+            <p class="brand-copy">Мониторинг, ротация и быстрый доступ к локальной инфраструктуре.</p>
+          </div>
+        </div>
+
+        <nav class="nav-list">
+          <a href="/index.html" class="nav-link" data-nav="dashboard">Обзор</a>
+          <a href="/settings.html" class="nav-link" data-nav="settings">Параметры</a>
+          <a href="/logs.html" class="nav-link" data-nav="logs">Логи</a>
+          <a href="/script.html" class="nav-link" data-nav="script">Shell-скрипт</a>
+        </nav>
+
+        <div class="sidebar-panel">
+          <span class="meta-label">Адрес панели</span>
+          <strong id="sidebar-panel-url">-</strong>
+        </div>
+        <div class="sidebar-panel">
+          <span class="meta-label">Локальных ресурсов</span>
+          <strong id="sidebar-resource-count">-</strong>
+        </div>
+        <div class="sidebar-panel">
+          <span class="meta-label">Последняя рабочая локация</span>
+          <strong id="sidebar-last-good-location">-</strong>
+        </div>
+
+        <section class="sidebar-links-panel">
+          <div class="sidebar-links-head">
+            <span class="meta-label">Ресурсы LAN</span>
+            <a href="/settings.html#resources-config" class="sidebar-mini-link">Изменить</a>
+          </div>
+          <div id="sidebar-resource-links" class="sidebar-resource-links">
+            <div class="sidebar-resource-empty">Ссылки ещё не добавлены.</div>
+          </div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="topbar-eyebrow">Router-style dashboard</p>
+            <h2>Панель управления доступностью ресурса</h2>
+            <p class="topbar-copy">
+              Основные действия и текущее состояние VPN-проверки вынесены на обзорную страницу,
+              а конфигурация, логи и shell-скрипт живут на отдельных экранах.
+            </p>
+          </div>
+          <div class="action-cluster">
+            <button class="primary" id="run-check">Проверить ресурс</button>
+            <button id="run-rotate">Запустить переключение</button>
+            <button id="generate-script">Пересобрать скрипт</button>
+          </div>
+        </header>
+
+        <section class="overview-grid">
+          <article class="metric-card">
+            <span class="meta-label">Исходный скрипт</span>
+            <strong id="source-script">-</strong>
+          </article>
+          <article class="metric-card">
+            <span class="meta-label">Сгенерированный скрипт</span>
+            <strong id="generated-script">-</strong>
+          </article>
+          <article class="metric-card">
+            <span class="meta-label">Лог-файл</span>
+            <strong id="log-file">-</strong>
+          </article>
+          <article class="metric-card emphasis">
+            <span class="meta-label">Последняя удачная локация</span>
+            <strong id="last-good-location">-</strong>
+          </article>
+        </section>
+
+        <section class="status-strip">
+          <article class="status-card">
+            <span class="meta-label">Последняя проверка</span>
+            <p id="last-check-summary">Нет данных</p>
+          </article>
+          <article class="status-card">
+            <span class="meta-label">Последний запуск ротации</span>
+            <p id="last-rotation-summary">Нет данных</p>
+          </article>
+          <article class="status-card">
+            <span class="meta-label">Последняя генерация</span>
+            <p id="last-generation-summary">Нет данных</p>
+          </article>
+          <article class="status-card compact">
+            <span class="meta-label">Состояние панели</span>
+            <p id="panel-url">-</p>
+            <button class="ghost small" id="refresh-state">Обновить</button>
+          </article>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <p class="section-eyebrow">AdGuard VPN CLI</p>
+              <h3>Прямое управление VPN</h3>
+            </div>
+            <div class="section-actions">
+              <button class="ghost" id="vpn-refresh-status">Обновить статус</button>
+              <button class="ghost" id="vpn-refresh-locations">Обновить локации</button>
+            </div>
+          </div>
+
+          <div class="vpn-grid">
+            <article class="vpn-card">
+              <span class="meta-label">Состояние CLI</span>
+              <strong id="vpn-cli-availability">-</strong>
+            </article>
+            <article class="vpn-card">
+              <span class="meta-label">Подключение</span>
+              <strong id="vpn-connected-status">-</strong>
+            </article>
+            <article class="vpn-card">
+              <span class="meta-label">Текущая локация</span>
+              <strong id="vpn-current-location">-</strong>
+            </article>
+            <article class="vpn-card">
+              <span class="meta-label">Последняя CLI-операция</span>
+              <strong id="vpn-last-action">-</strong>
+            </article>
+          </div>
+
+          <div class="vpn-control-row">
+            <label class="vpn-select-block">
+              Локация для подключения
+              <select id="vpn-location-select">
+                <option value="">Quick connect</option>
+              </select>
+            </label>
+            <div class="action-cluster left">
+              <button class="primary" id="vpn-connect-selected">Подключить</button>
+              <button id="vpn-quick-connect">Quick connect</button>
+              <button class="ghost" id="vpn-disconnect">Отключить</button>
+            </div>
+          </div>
+
+          <pre id="vpn-output" class="console compact-console">Ожидание команд adguardvpn-cli.</pre>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <p class="section-eyebrow">Activity</p>
+              <h3>Результат последней операции</h3>
+            </div>
+          </div>
+          <pre id="action-output" class="console compact-console">Ожидание действий.</pre>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

@@ -1,0 +1,64 @@
+#!/opt/bin/sh
+
+NAME="keenetic-vpn-panel"
+APP_DIR="/opt/share/keenetic-vpn-panel"
+START_SCRIPT="$APP_DIR/deploy/entware/start_vpn_panel.sh"
+PID_FILE="/opt/var/run/${NAME}.pid"
+
+start() {
+  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    echo "$NAME already running"
+    return 0
+  fi
+
+  mkdir -p /opt/var/run
+  "$START_SCRIPT" &
+  echo $! > "$PID_FILE"
+  echo "$NAME started"
+}
+
+stop() {
+  if [ ! -f "$PID_FILE" ]; then
+    echo "$NAME is not running"
+    return 0
+  fi
+
+  PID="$(cat "$PID_FILE" 2>/dev/null)"
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+    kill "$PID"
+  fi
+
+  rm -f "$PID_FILE"
+  echo "$NAME stopped"
+}
+
+status() {
+  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    echo "$NAME is running with PID $(cat "$PID_FILE")"
+    return 0
+  fi
+
+  echo "$NAME is not running"
+  return 1
+}
+
+case "$1" in
+  start)
+    start
+    ;;
+  stop)
+    stop
+    ;;
+  restart)
+    stop
+    sleep 1
+    start
+    ;;
+  status)
+    status
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|status}"
+    exit 1
+    ;;
+esac
