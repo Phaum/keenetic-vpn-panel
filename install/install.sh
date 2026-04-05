@@ -9,7 +9,6 @@ APP_DIR="${APP_DIR:-/opt/share/keenetic-vpn-panel}"
 TMP_DIR="/opt/tmp/${REPO_NAME}-install.$$"
 ARCHIVE_URL="https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/${BRANCH}"
 INIT_SCRIPT_PATH="/opt/etc/init.d/S99keenetic-vpn-panel"
-START_SCRIPT_PATH="${APP_DIR}/deploy/entware/start_vpn_panel.sh"
 
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -82,8 +81,7 @@ if [ -f "${APP_DIR}/config.json" ]; then
 fi
 
 rm -rf "$APP_DIR"
-mkdir -p "$APP_DIR"
-cp -R "${EXTRACTED_DIR}/." "$APP_DIR/"
+mv "$EXTRACTED_DIR" "$APP_DIR"
 
 if [ -n "$BACKUP_CONFIG" ] && [ -f "$BACKUP_CONFIG" ]; then
   cp "$BACKUP_CONFIG" "${APP_DIR}/config.json"
@@ -92,16 +90,43 @@ fi
 mkdir -p "${APP_DIR}/deploy/entware"
 mkdir -p "/opt/etc/init.d"
 
+if [ ! -f "${APP_DIR}/config.json" ]; then
+  echo "config.json not found after extracting the project"
+  exit 1
+fi
+
 APP_DIR="$APP_DIR" /opt/bin/python3 - <<'PY'
 import json
 import os
+import socket
 from pathlib import Path
 
 app_dir = Path(os.environ["APP_DIR"])
 config_path = app_dir / "config.json"
 config = json.loads(config_path.read_text(encoding="utf-8"))
 
+def port_is_free(host: str, port: int) -> bool:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
 config["panel"]["host"] = "0.0.0.0"
+
+current_port = int(config["panel"].get("port", 18090))
+candidate_ports = [18090, 18091, 18092, 18093, 8090]
+if current_port == 8088 or not port_is_free("0.0.0.0", current_port):
+    for port in candidate_ports:
+        if port_is_free("0.0.0.0", port):
+            current_port = port
+            break
+
+config["panel"]["port"] = current_port
 config["autostart"]["enabled"] = True
 config["autostart"]["app_dir"] = str(app_dir)
 config["autostart"]["python_bin"] = "/opt/bin/python3"
@@ -200,10 +225,15 @@ chmod +x "$INIT_SCRIPT_PATH"
 
 "$INIT_SCRIPT_PATH" restart || "$INIT_SCRIPT_PATH" start
 
+PANEL_PORT="$(sed -n 's/.*"port":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "${APP_DIR}/config.json" | head -n 1)"
+if [ -z "$PANEL_PORT" ]; then
+  PANEL_PORT="18090"
+fi
+
 echo ""
 echo "Installation completed."
 echo "Open the panel from your local network:"
-echo "http://<router-lan-ip>:8088"
+echo "http://<router-lan-ip>:${PANEL_PORT}"
 echo ""
 echo "Service status:"
 echo "${INIT_SCRIPT_PATH} status"
