@@ -66,6 +66,16 @@ fi
 
 ARCHIVE_PATH="${TMP_DIR}/project.tar.gz"
 download_file "$ARCHIVE_URL" "$ARCHIVE_PATH"
+tar -tzf "$ARCHIVE_PATH" >/dev/null 2>&1 || {
+  echo "Downloaded archive is invalid"
+  exit 1
+}
+
+ROOT_DIR="$(tar -tzf "$ARCHIVE_PATH" | head -n 1 | cut -d/ -f1)"
+if [ -z "$ROOT_DIR" ]; then
+  echo "Could not detect project root directory inside archive"
+  exit 1
+fi
 
 BACKUP_CONFIG=""
 if [ -f "${APP_DIR}/config.json" ]; then
@@ -73,9 +83,17 @@ if [ -f "${APP_DIR}/config.json" ]; then
   cp "${APP_DIR}/config.json" "$BACKUP_CONFIG"
 fi
 
+tar -xzf "$ARCHIVE_PATH" -C "$TMP_DIR"
+
+EXTRACTED_DIR="${TMP_DIR}/${ROOT_DIR}"
+if [ ! -d "$EXTRACTED_DIR" ]; then
+  echo "Extracted project directory not found"
+  exit 1
+fi
+
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"
-tar -xzf "$ARCHIVE_PATH" -C "$APP_DIR" --strip-components=1
+cp -R "${EXTRACTED_DIR}/." "$APP_DIR/"
 
 if [ -n "$BACKUP_CONFIG" ] && [ -f "$BACKUP_CONFIG" ]; then
   cp "$BACKUP_CONFIG" "${APP_DIR}/config.json"
