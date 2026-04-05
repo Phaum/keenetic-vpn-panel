@@ -66,13 +66,6 @@ fi
 
 ARCHIVE_PATH="${TMP_DIR}/project.tar.gz"
 download_file "$ARCHIVE_URL" "$ARCHIVE_PATH"
-tar -xzf "$ARCHIVE_PATH" -C "$TMP_DIR"
-
-EXTRACTED_DIR="$(find "$TMP_DIR" -maxdepth 1 -type d -name "${REPO_NAME}-*" | head -n 1)"
-if [ -z "$EXTRACTED_DIR" ] || [ ! -d "$EXTRACTED_DIR" ]; then
-  echo "Extracted project directory not found"
-  exit 1
-fi
 
 BACKUP_CONFIG=""
 if [ -f "${APP_DIR}/config.json" ]; then
@@ -81,7 +74,8 @@ if [ -f "${APP_DIR}/config.json" ]; then
 fi
 
 rm -rf "$APP_DIR"
-mv "$EXTRACTED_DIR" "$APP_DIR"
+mkdir -p "$APP_DIR"
+tar -xzf "$ARCHIVE_PATH" -C "$APP_DIR" --strip-components=1
 
 if [ -n "$BACKUP_CONFIG" ] && [ -f "$BACKUP_CONFIG" ]; then
   cp "$BACKUP_CONFIG" "${APP_DIR}/config.json"
