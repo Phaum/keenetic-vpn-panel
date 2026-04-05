@@ -89,6 +89,9 @@ if [ -n "$BACKUP_CONFIG" ] && [ -f "$BACKUP_CONFIG" ]; then
   cp "$BACKUP_CONFIG" "${APP_DIR}/config.json"
 fi
 
+mkdir -p "${APP_DIR}/deploy/entware"
+mkdir -p "/opt/etc/init.d"
+
 APP_DIR="$APP_DIR" /opt/bin/python3 - <<'PY'
 import json
 import os
