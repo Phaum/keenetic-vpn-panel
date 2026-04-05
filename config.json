@@ -24,12 +24,12 @@
   "autostart": {
     "enabled": false,
     "service_name": "keenetic-vpn-panel",
-    "app_dir": "c:\\files\\keenetic\\vpn\\tmp_autostart_test\\app",
-    "python_bin": "python",
-    "log_file": "c:\\files\\keenetic\\vpn\\tmp_autostart_test\\var\\log\\panel.log",
-    "pid_file": "c:\\files\\keenetic\\vpn\\tmp_autostart_test\\var\\run\\panel.pid",
-    "start_script_path": "c:\\files\\keenetic\\vpn\\tmp_autostart_test\\app\\deploy\\entware\\start_vpn_panel.sh",
-    "init_script_path": "c:\\files\\keenetic\\vpn\\tmp_autostart_test\\etc\\init.d\\S99keenetic-vpn-panel"
+    "app_dir": "/opt/share/keenetic-vpn-panel",
+    "python_bin": "/opt/bin/python3",
+    "log_file": "/opt/var/log/keenetic-vpn-panel.log",
+    "pid_file": "/opt/var/run/keenetic-vpn-panel.pid",
+    "start_script_path": "/opt/share/keenetic-vpn-panel/deploy/entware/start_vpn_panel.sh",
+    "init_script_path": "/opt/etc/init.d/S99keenetic-vpn-panel"
   },
   "paths": {
     "lock_file": "/opt/tmp/adguardvpn-switch.lock",

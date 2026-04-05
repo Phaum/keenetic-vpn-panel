@@ -4,7 +4,7 @@ set -eu
 
 REPO_OWNER="${REPO_OWNER:-Phaum}"
 REPO_NAME="${REPO_NAME:-keenetic-vpn-panel}"
-BRANCH="${BRANCH:-main}"
+BRANCH="${BRANCH:-master}"
 APP_DIR="${APP_DIR:-/opt/share/keenetic-vpn-panel}"
 TMP_DIR="/opt/tmp/${REPO_NAME}-install.$$"
 ARCHIVE_URL="https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/${BRANCH}"

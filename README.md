@@ -115,13 +115,13 @@ https://github.com/Phaum/keenetic-vpn-panel
 установка одной командой будет выглядеть так:
 
 ```sh
-/bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/main/install/install.sh)"
+/bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/master/install/install.sh)"
 ```
 
 Если на роутере нет `curl`, можно использовать:
 
 ```sh
-/bin/sh -c "$(wget -O- https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/main/install/install.sh)"
+/bin/sh -c "$(wget -O- https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/master/install/install.sh)"
 ```
 
 Что делает установщик:
@@ -141,13 +141,13 @@ https://github.com/Phaum/keenetic-vpn-panel
 Обновление:
 
 ```sh
-/bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/main/install/update.sh)"
+/bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/master/install/update.sh)"
 ```
 
 Удаление:
 
 ```sh
-/bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/main/install/uninstall.sh)"
+/bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/master/install/uninstall.sh)"
 ```
 
 ## Автозапуск из веб-панели
