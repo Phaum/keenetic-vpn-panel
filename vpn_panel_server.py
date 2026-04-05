@@ -109,6 +109,8 @@ STATE: dict[str, Any] = {
     "last_autostart_action": None,
 }
 
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -322,15 +324,30 @@ def tail_file(path: Path, lines: int = 200) -> str:
     if not path.exists():
         return ""
     content = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    return "\n".join(content[-lines:])
+    return "\n".join(reversed(content[-lines:]))
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", text)
 
 
 def read_last_good_location(config: dict[str, Any]) -> str | None:
     good_path = Path(config["paths"]["good_file"])
     if not good_path.exists():
         return None
-    text = good_path.read_text(encoding="utf-8", errors="replace").strip()
+    text = strip_ansi(good_path.read_text(encoding="utf-8", errors="replace")).strip()
     return text or None
+
+
+def write_last_good_location(config: dict[str, Any], location: str | None) -> None:
+    if not location:
+        return
+    good_path = Path(config["paths"]["good_file"])
+    try:
+        good_path.parent.mkdir(parents=True, exist_ok=True)
+        good_path.write_text(strip_ansi(location).strip() + "\n", encoding="utf-8")
+    except OSError:
+        return
 
 
 def perform_http_check(config: dict[str, Any]) -> dict[str, Any]:
@@ -550,6 +567,8 @@ def parse_adguardvpn_status(result: dict[str, Any]) -> dict[str, Any]:
         "location": None,
         "account": None,
         "device": None,
+        "mode": None,
+        "listener": None,
         "raw": result.get("stdout", ""),
         "stderr": result.get("stderr", ""),
         "returncode": result.get("returncode"),
@@ -560,14 +579,28 @@ def parse_adguardvpn_status(result: dict[str, Any]) -> dict[str, Any]:
         return status
 
     text = result.get("stdout", "").replace("\r", "")
+    clean_text = strip_ansi(text)
     parsed: dict[str, str] = {}
-    for line in text.splitlines():
-        if ":" not in line:
+    for line in clean_text.splitlines():
+        if not re.match(r"^[A-Za-z][A-Za-z0-9 _-]*:\s*", line):
             continue
         key, value = line.split(":", 1)
         parsed[key.strip().lower()] = value.strip()
 
+    mode = None
+    listener = None
     location = parsed.get("location") or parsed.get("current location")
+    first_line = clean_text.splitlines()[0].strip() if clean_text.splitlines() else ""
+    connected_match = re.search(
+        r"Connected to\s+(.+?)\s+in\s+(.+?)\s+mode,\s+listening on\s+(.+)$",
+        first_line,
+        flags=re.IGNORECASE,
+    )
+    if connected_match:
+        location = connected_match.group(1).strip()
+        mode = connected_match.group(2).strip()
+        listener = connected_match.group(3).strip()
+
     account = parsed.get("account")
     device = parsed.get("device")
     state_value = (
@@ -576,7 +609,7 @@ def parse_adguardvpn_status(result: dict[str, Any]) -> dict[str, Any]:
         or parsed.get("connection status")
         or ""
     ).lower()
-    connected = bool(location) or "connected" in text.lower()
+    connected = bool(location) or "connected" in clean_text.lower()
     if state_value:
         connected = connected or "connected" in state_value
 
@@ -586,7 +619,10 @@ def parse_adguardvpn_status(result: dict[str, Any]) -> dict[str, Any]:
             "location": location,
             "account": account,
             "device": device,
+            "mode": mode,
+            "listener": listener,
             "parsed": parsed,
+            "clean_raw": clean_text,
         }
     )
     return status
@@ -608,7 +644,7 @@ def parse_adguardvpn_locations(result: dict[str, Any]) -> dict[str, Any]:
     if not result.get("success"):
         return payload
 
-    lines = result.get("stdout", "").replace("\r", "").splitlines()
+    lines = strip_ansi(result.get("stdout", "").replace("\r", "")).splitlines()
     header_found = False
     items: list[dict[str, str]] = []
     for line in lines:
@@ -623,14 +659,11 @@ def parse_adguardvpn_locations(result: dict[str, Any]) -> dict[str, Any]:
         if not header_found:
             continue
 
-        parts = stripped.split()
-        if len(parts) < 4:
+        columns = re.split(r"\s{2,}", stripped)
+        if len(columns) < 4:
             continue
 
-        code = parts[0]
-        country = parts[1]
-        city = " ".join(parts[2:-1]) if len(parts) > 4 else parts[2]
-        score = parts[-1]
+        code, country, city, score = columns[:4]
         items.append(
             {
                 "code": code,
@@ -643,11 +676,14 @@ def parse_adguardvpn_locations(result: dict[str, Any]) -> dict[str, Any]:
 
     payload["items"] = items
     payload["message"] = f"Найдено локаций: {len(items)}" if items else payload["message"]
+    payload["clean_raw"] = "\n".join(lines)
     return payload
 
 
 def get_adguardvpn_status(config: dict[str, Any]) -> dict[str, Any]:
     result = parse_adguardvpn_status(run_adguardvpn_cli(config, ["status"]))
+    if result.get("connected") and result.get("location"):
+        write_last_good_location(config, result["location"])
     with STATE_LOCK:
         STATE["last_vpn_status"] = result
     return result
@@ -668,10 +704,13 @@ def connect_adguardvpn(config: dict[str, Any], location: str | None = None) -> d
     if location:
         args.extend(["-l", location])
     result = run_adguardvpn_cli(config, args)
+    status = get_adguardvpn_status(config)
+    if status.get("connected") and status.get("location"):
+        write_last_good_location(config, status["location"])
     payload = {
         **result,
         "location": location,
-        "status": get_adguardvpn_status(config),
+        "status": status,
     }
     with STATE_LOCK:
         STATE["last_cli_action"] = payload
@@ -923,6 +962,11 @@ def collect_state(config: dict[str, Any]) -> dict[str, Any]:
     with STATE_LOCK:
         snapshot = deep_copy(STATE)
 
+    last_good_location = read_last_good_location(config)
+    if not last_good_location:
+        last_status = snapshot.get("last_vpn_status") or {}
+        last_good_location = last_status.get("location")
+
     return {
         "config_path": str(CONFIG_PATH),
         "panel_url": f"http://{config['panel']['host']}:{config['panel']['port']}",
@@ -941,7 +985,7 @@ def collect_state(config: dict[str, Any]) -> dict[str, Any]:
             "size": log_path.stat().st_size if log_path.exists() else 0,
         },
         "resource_count": len(config.get("resources", {}).get("links", [])),
-        "last_good_location": read_last_good_location(config),
+        "last_good_location": last_good_location,
         "last_check": snapshot.get("last_check"),
         "last_rotation": snapshot.get("last_rotation"),
         "last_script_generation": snapshot.get("last_script_generation"),

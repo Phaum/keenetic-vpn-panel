@@ -362,8 +362,9 @@ function renderVpnStatus(status) {
     status.available ? (status.connected ? "Подключено" : "Не подключено") : "-"
   );
   setText("vpn-current-location", status.location || "Нет данных");
-  if (vpnOutput && status.message && !status.connected && !status.available) {
-    setVpnMessage(JSON.stringify(status, null, 2));
+  if (status.location) {
+    setText("last-good-location", status.location);
+    setText("sidebar-last-good-location", status.location);
   }
 }
 
@@ -417,8 +418,64 @@ async function runVpnAction(url, payload, successPrefix) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload || {}),
   });
-  setVpnMessage(`${successPrefix}\n\n${JSON.stringify(result, null, 2)}`);
+  const status = result.status || result;
+  const summary = [successPrefix, "", formatVpnStatusText(status)];
+  if (result.stdout || result.stderr) {
+    summary.push("", "CLI output:");
+    if (result.stdout) {
+      summary.push(result.stdout.trim());
+    }
+    if (result.stderr) {
+      summary.push(result.stderr.trim());
+    }
+  }
+  setVpnMessage(summary.filter(Boolean).join("\n"));
   await Promise.all([loadState(), loadVpnStatus(), loadVpnLocations()]);
+}
+
+function formatVpnStatusText(status) {
+  const lines = [];
+  lines.push(`CLI: ${status.available ? "доступен" : "недоступен"}`);
+  lines.push(`Команда: ${status.command?.join(" ") || "-"}`);
+  lines.push(`Статус: ${status.connected ? "подключено" : "не подключено"}`);
+  lines.push(`Локация: ${status.location || "не определена"}`);
+  if (status.mode) {
+    lines.push(`Режим: ${status.mode}`);
+  }
+  if (status.listener) {
+    lines.push(`Слушает: ${status.listener}`);
+  }
+  if (status.message) {
+    lines.push(`Сообщение: ${status.message}`);
+  }
+  if (status.stderr) {
+    lines.push(`stderr: ${status.stderr.trim()}`);
+  }
+  return lines.join("\n");
+}
+
+function formatVpnLocationsText(payload) {
+  const items = payload.items || [];
+  const lines = [];
+  lines.push(`CLI: ${payload.available ? "доступен" : "недоступен"}`);
+  lines.push(`Локаций найдено: ${items.length}`);
+  if (payload.message) {
+    lines.push(`Сообщение: ${payload.message}`);
+  }
+  if (!items.length) {
+    if (payload.stderr) {
+      lines.push(`stderr: ${payload.stderr.trim()}`);
+    }
+    return lines.join("\n");
+  }
+
+  lines.push("");
+  items.forEach((item, index) => {
+    lines.push(
+      `${String(index + 1).padStart(2, "0")}. ${item.code} | ${item.country} | ${item.city} | ping ${item.score}`
+    );
+  });
+  return lines.join("\n");
 }
 
 async function runAutostartAction(url, payload, successPrefix) {
@@ -586,7 +643,7 @@ function bindActions() {
   bindClick("vpn-refresh-status", async () => {
     try {
       const status = await loadVpnStatus();
-      setVpnMessage(JSON.stringify(status, null, 2));
+      setVpnMessage(formatVpnStatusText(status));
     } catch (error) {
       setVpnMessage(error.message);
     }
@@ -595,7 +652,7 @@ function bindActions() {
   bindClick("vpn-refresh-locations", async () => {
     try {
       const locations = await loadVpnLocations();
-      setVpnMessage(JSON.stringify(locations, null, 2));
+      setVpnMessage(formatVpnLocationsText(locations));
     } catch (error) {
       setVpnMessage(error.message);
     }
@@ -686,7 +743,8 @@ async function boot() {
       setStatusMessage("Панель готова к работе.");
     }
     if (vpnOutput && !vpnOutput.textContent.trim()) {
-      setVpnMessage("Панель управления adguardvpn-cli готова.");
+      const status = await loadVpnStatus();
+      setVpnMessage(formatVpnStatusText(status));
     }
     if (autostartOutput && !autostartOutput.textContent.trim()) {
       setAutostartMessage("Панель управления автозапуском готова.");
