@@ -38,6 +38,12 @@
     "tmp_file": "/opt/tmp/adguardvpn-locations.txt",
     "body_file": "/opt/tmp/adguardvpn-check-body.txt"
   },
+  "logging": {
+    "debug_enabled": false,
+    "debug_log_file": "/opt/var/log/adguardvpn-rotate.debug.log",
+    "debug_max_bytes": 262144,
+    "debug_backup_count": 2
+  },
   "resources": {
     "links": [
       {

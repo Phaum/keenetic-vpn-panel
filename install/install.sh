@@ -153,6 +153,10 @@ PY
 cat > "${APP_DIR}/deploy/entware/start_vpn_panel.sh" <<EOF
 #!/opt/bin/sh
 
+export SSL_CERT_FILE=/opt/etc/ssl/certs/ca-certificates.crt
+export HOME=/root
+PATH=/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
 APP_DIR="${APP_DIR}"
 PYTHON_BIN="/opt/bin/python3"
 LOG_FILE="/opt/var/log/keenetic-vpn-panel.log"

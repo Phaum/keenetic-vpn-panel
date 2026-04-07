@@ -70,12 +70,13 @@ check_resource_once() {
     -o "$BODY_FILE" \
     -w '%{http_code}' \
     "$TEST_URL" 2>/dev/null)"
+  CURL_EXIT="$?"
 
   case "$CODE" in
     200|301|302)
       ;;
     *)
-      log "HTTP check failed: url=$TEST_URL code=$CODE"
+      log "HTTP check failed: url=$TEST_URL code=$CODE curl_exit=$CURL_EXIT"
       rm -f "$BODY_FILE"
       return 1
       ;;
@@ -109,22 +110,34 @@ check_resource() {
 }
 
 get_top_locations() {
-  adguardvpn-cli list-locations "$TOP_COUNT" 2>/dev/null \
+  adguardvpn-cli list-locations 2>/dev/null \
     | sed 's/\r//g' \
+    | sed 's/\x1b\[[0-9;]*m//g' \
     | awk '
-      BEGIN { header_found=0 }
+      BEGIN { header_found=0; count=0 }
       /^ISO[[:space:]]+COUNTRY/ { header_found=1; next }
       /^You can connect/ { exit }
-      header_found && NF >= 4 { print $1 }
+      header_found && NF >= 4 {
+        print $1
+        count++
+        if (count >= '"$TOP_COUNT"') exit
+      }
     '
 }
 
 get_current_location() {
   adguardvpn-cli status 2>/dev/null \
     | sed 's/\r//g' \
+    | sed 's/\x1b\[[0-9;]*m//g' \
     | awk -F': ' '
       /Location:/ { print $2; exit }
       /location:/ { print $2; exit }
+      /^Connected to / {
+        sub(/^Connected to /, "", $0)
+        sub(/ in .*/, "", $0)
+        print $0
+        exit
+      }
     '
 }
 

@@ -22,7 +22,7 @@
           <a href="/index.html" class="nav-link" data-nav="dashboard">Обзор</a>
           <a href="/settings.html" class="nav-link" data-nav="settings">Параметры</a>
           <a href="/logs.html" class="nav-link" data-nav="logs">Логи</a>
-          <a href="/script.html" class="nav-link" data-nav="script">Shell-скрипт</a>
+          <a href="/script.html" class="nav-link" data-nav="script">Shell-wrapper</a>
         </nav>
 
         <div class="sidebar-panel">
@@ -121,7 +121,7 @@
                     <input name="panel.port" type="number" min="1" required />
                   </label>
                   <label>
-                    Команда запуска shell-скрипта
+                    Legacy runner для shell-wrapper
                     <input name="panel.script_runner" type="text" required />
                   </label>
                   <label>
@@ -129,7 +129,7 @@
                     <input name="panel.source_script" type="text" required />
                   </label>
                   <label class="full-span">
-                    Путь для сгенерированного скрипта
+                    Путь для сгенерированного wrapper-скрипта
                     <input name="panel.generated_script" type="text" required />
                   </label>
                 </div>
@@ -225,6 +225,30 @@
                   <label class="full-span">
                     Временный body-файл
                     <input name="paths.body_file" type="text" required />
+                  </label>
+                </div>
+              </section>
+
+              <section class="form-block">
+                <div class="block-head">
+                  <h4>Логирование</h4>
+                </div>
+                <div class="field-grid">
+                  <label class="checkbox-label full-span">
+                    <input name="logging.debug_enabled" type="checkbox" />
+                    Включить подробный debug-лог для диагностики ротации и вызовов CLI
+                  </label>
+                  <label class="full-span">
+                    Файл debug-лога
+                    <input name="logging.debug_log_file" type="text" required />
+                  </label>
+                  <label>
+                    Лимит размера debug-лога
+                    <input name="logging.debug_max_bytes" type="number" min="1" required />
+                  </label>
+                  <label>
+                    Количество backup-файлов
+                    <input name="logging.debug_backup_count" type="number" min="1" required />
                   </label>
                 </div>
               </section>

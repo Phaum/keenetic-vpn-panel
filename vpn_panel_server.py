@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
 import ssl
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -15,7 +17,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -63,6 +65,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "tmp_file": "/opt/tmp/adguardvpn-locations.txt",
         "body_file": "/opt/tmp/adguardvpn-check-body.txt",
     },
+    "logging": {
+        "debug_enabled": False,
+        "debug_log_file": "/opt/var/log/adguardvpn-rotate.debug.log",
+        "debug_max_bytes": 262144,
+        "debug_backup_count": 2,
+    },
     "resources": {
         "links": [
             {
@@ -99,6 +107,7 @@ SHELL_IMPORT_MAP = {
 
 STATE_LOCK = threading.Lock()
 ACTION_LOCK = threading.Lock()
+VPN_COMMAND_LOCK = threading.Lock()
 STATE: dict[str, Any] = {
     "last_check": None,
     "last_rotation": None,
@@ -110,6 +119,11 @@ STATE: dict[str, Any] = {
 }
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+ROUTER_ENV = {
+    "SSL_CERT_FILE": "/opt/etc/ssl/certs/ca-certificates.crt",
+    "HOME": "/root",
+    "PATH": "/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
+}
 
 
 def utc_now() -> str:
@@ -197,6 +211,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         ("paths", "good_file"),
         ("paths", "tmp_file"),
         ("paths", "body_file"),
+        ("logging", "debug_log_file"),
     ]
 
     for section, key in required_strings:
@@ -215,6 +230,8 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         ("vpn", "check_retries"),
         ("vpn", "check_retry_delay"),
         ("vpn", "switch_delay"),
+        ("logging", "debug_max_bytes"),
+        ("logging", "debug_backup_count"),
     ]
 
     for section, key in positive_int_fields:
@@ -227,6 +244,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         merged[section][key] = value
 
     merged["autostart"]["enabled"] = bool(merged.get("autostart", {}).get("enabled", False))
+    merged["logging"]["debug_enabled"] = bool(merged.get("logging", {}).get("debug_enabled", False))
 
     resources = merged.get("resources", {})
     links = resources.get("links", [])
@@ -272,23 +290,9 @@ def resolve_local_path(relative_or_absolute: str) -> Path:
 
 
 def render_script(config: dict[str, Any]) -> str:
-    vpn = config["vpn"]
-    paths = config["paths"]
     content = TEMPLATE_PATH.read_text(encoding="utf-8")
     replacements = {
-        "test_url": shlex.quote(vpn["test_url"]),
-        "expected_text": shlex.quote(vpn["expected_text"]),
-        "top_count": vpn["top_count"],
-        "timeout": vpn["timeout"],
-        "connect_timeout": vpn["connect_timeout"],
-        "check_retries": vpn["check_retries"],
-        "check_retry_delay": vpn["check_retry_delay"],
-        "switch_delay": vpn["switch_delay"],
-        "lock_file": shlex.quote(paths["lock_file"]),
-        "log_file": shlex.quote(paths["log_file"]),
-        "good_file": shlex.quote(paths["good_file"]),
-        "tmp_file": shlex.quote(paths["tmp_file"]),
-        "body_file": shlex.quote(paths["body_file"]),
+        "python_bin": shlex.quote(config["autostart"]["python_bin"]),
     }
 
     for key, value in replacements.items():
@@ -331,6 +335,155 @@ def strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub("", text)
 
 
+def build_command_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.update(ROUTER_ENV)
+    return env
+
+
+def ensure_runtime_dirs(config: dict[str, Any]) -> None:
+    for key in ("lock_file", "log_file", "good_file", "tmp_file", "body_file"):
+        try:
+            Path(config["paths"][key]).parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+    try:
+        Path(config["logging"]["debug_log_file"]).parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+
+
+def append_rotation_log(config: dict[str, Any], message: str) -> None:
+    log_path = Path(config["paths"]["log_file"])
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
+    except OSError:
+        return
+
+
+def summarize_for_log(value: Any, max_length: int = 600) -> Any:
+    if isinstance(value, str):
+        compact = strip_ansi(value).replace("\r", "").strip()
+        compact = compact.replace("\n", "\\n")
+        return compact[: max_length - 3] + "..." if len(compact) > max_length else compact
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): summarize_for_log(item, max_length=max_length) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [summarize_for_log(item, max_length=max_length) for item in value]
+    return value
+
+
+def rotate_debug_logs(config: dict[str, Any]) -> None:
+    logging_cfg = config["logging"]
+    log_path = Path(logging_cfg["debug_log_file"])
+    max_bytes = int(logging_cfg["debug_max_bytes"])
+    backup_count = int(logging_cfg["debug_backup_count"])
+    if not log_path.exists() or max_bytes <= 0 or log_path.stat().st_size < max_bytes:
+        return
+
+    for index in range(backup_count, 0, -1):
+        source = log_path.with_name(f"{log_path.name}.{index}")
+        target = log_path.with_name(f"{log_path.name}.{index + 1}")
+        try:
+            if index == backup_count and source.exists():
+                source.unlink()
+            elif source.exists():
+                source.replace(target)
+        except OSError:
+            return
+
+    try:
+        log_path.replace(log_path.with_name(f"{log_path.name}.1"))
+    except OSError:
+        return
+
+
+def append_debug_log(config: dict[str, Any], event: str, **data: Any) -> None:
+    logging_cfg = config["logging"]
+    if not logging_cfg.get("debug_enabled"):
+        return
+
+    ensure_runtime_dirs(config)
+    rotate_debug_logs(config)
+    log_path = Path(logging_cfg["debug_log_file"])
+    payload = {
+        "ts": utc_now(),
+        "pid": os.getpid(),
+        "event": event,
+        "data": summarize_for_log(data),
+    }
+    try:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        return
+
+
+def update_last_check_state(result: dict[str, Any]) -> None:
+    with STATE_LOCK:
+        STATE["last_check"] = result
+
+
+def normalize_location_name(value: str | None) -> str:
+    return strip_ansi(value or "").replace("\r", "").strip()
+
+
+def same_location(left: str | None, right: str | None) -> bool:
+    return bool(normalize_location_name(left)) and normalize_location_name(left).casefold() == normalize_location_name(right).casefold()
+
+
+def process_is_running(pid: int | None) -> bool:
+    if not pid or pid <= 0:
+        return False
+
+    proc_path = Path(f"/proc/{pid}")
+    if proc_path.exists():
+        return True
+
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def acquire_rotation_file_lock(config: dict[str, Any]) -> tuple[bool, int | None]:
+    ensure_runtime_dirs(config)
+    lock_path = Path(config["paths"]["lock_file"])
+    stale_pid: int | None = None
+    if lock_path.exists():
+        try:
+            stale_pid = int(lock_path.read_text(encoding="utf-8", errors="replace").strip())
+        except (OSError, ValueError):
+            stale_pid = None
+        if process_is_running(stale_pid):
+            append_debug_log(config, "rotation.lock.busy", active_pid=stale_pid)
+            return False, stale_pid
+
+    try:
+        lock_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    except OSError:
+        append_debug_log(config, "rotation.lock.error", path=str(lock_path))
+        return False, None
+    append_debug_log(config, "rotation.lock.acquired", path=str(lock_path))
+    return True, stale_pid
+
+
+def release_rotation_file_lock(config: dict[str, Any]) -> None:
+    for key in ("lock_file", "tmp_file", "body_file"):
+        path = Path(config["paths"][key])
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            continue
+    append_debug_log(config, "rotation.lock.released")
+
+
 def read_last_good_location(config: dict[str, Any]) -> str | None:
     good_path = Path(config["paths"]["good_file"])
     if not good_path.exists():
@@ -350,7 +503,7 @@ def write_last_good_location(config: dict[str, Any], location: str | None) -> No
         return
 
 
-def perform_http_check(config: dict[str, Any]) -> dict[str, Any]:
+def execute_http_check(config: dict[str, Any], *, log_failures: bool = False) -> dict[str, Any]:
     vpn = config["vpn"]
     attempts: list[dict[str, Any]] = []
     context = ssl.create_default_context()
@@ -359,6 +512,14 @@ def perform_http_check(config: dict[str, Any]) -> dict[str, Any]:
 
     for attempt_index in range(1, vpn["check_retries"] + 1):
         started_at = time.time()
+        append_debug_log(
+            config,
+            "http_check.attempt.started",
+            attempt=attempt_index,
+            url=vpn["test_url"],
+            timeout=vpn["timeout"],
+            connect_timeout=vpn["connect_timeout"],
+        )
         attempt_result: dict[str, Any] = {
             "attempt": attempt_index,
             "started_at": utc_now(),
@@ -387,17 +548,26 @@ def perform_http_check(config: dict[str, Any]) -> dict[str, Any]:
                 if status_code in (200, 301, 302) and contains_text:
                     attempt_result["success"] = True
                     attempts.append(attempt_result)
-                    result = {
+                    append_debug_log(config, "http_check.attempt.succeeded", result=attempt_result)
+                    return {
                         "success": True,
                         "message": "Ресурс доступен и ожидаемый текст найден.",
                         "attempts": attempts,
                         "checked_at": utc_now(),
                     }
-                    with STATE_LOCK:
-                        STATE["last_check"] = result
-                    return result
 
-                attempt_result["message"] = "Ответ получен, но проверка текста не пройдена."
+                if status_code not in (200, 301, 302):
+                    attempt_result["message"] = f"HTTP error: {status_code}"
+                    if log_failures:
+                        append_rotation_log(config, f"HTTP check failed: url={vpn['test_url']} code={status_code}")
+                else:
+                    attempt_result["message"] = "Ответ получен, но проверка текста не пройдена."
+                    if log_failures:
+                        append_rotation_log(
+                            config,
+                            f"Content check failed: expected text not found for {vpn['test_url']}",
+                        )
+                append_debug_log(config, "http_check.attempt.failed", result=attempt_result)
         except urllib.error.HTTPError as exc:
             attempt_result.update(
                 {
@@ -406,84 +576,347 @@ def perform_http_check(config: dict[str, Any]) -> dict[str, Any]:
                     "duration_ms": round((time.time() - started_at) * 1000, 2),
                 }
             )
+            if log_failures:
+                append_rotation_log(config, f"HTTP check failed: url={vpn['test_url']} code={exc.code}")
+            append_debug_log(config, "http_check.attempt.http_error", result=attempt_result)
         except Exception as exc:  # noqa: BLE001
             attempt_result.update(
                 {
+                    "status_code": 0,
                     "message": str(exc),
                     "duration_ms": round((time.time() - started_at) * 1000, 2),
                 }
             )
+            if log_failures:
+                append_rotation_log(config, f"HTTP check failed: url={vpn['test_url']} code=000 error={exc}")
+            append_debug_log(config, "http_check.attempt.exception", result=attempt_result)
 
         attempts.append(attempt_result)
         if attempt_index < vpn["check_retries"]:
             time.sleep(vpn["check_retry_delay"])
 
-    result = {
+    return {
         "success": False,
         "message": "Ресурс недоступен или страница не содержит ожидаемый текст.",
         "attempts": attempts,
         "checked_at": utc_now(),
     }
-    with STATE_LOCK:
-        STATE["last_check"] = result
+
+
+def perform_http_check(config: dict[str, Any]) -> dict[str, Any]:
+    result = execute_http_check(config, log_failures=False)
+    update_last_check_state(result)
     return result
+
+
+def get_rotation_candidates(config: dict[str, Any]) -> dict[str, Any]:
+    limit = config["vpn"]["top_count"]
+    payload = get_adguardvpn_locations(config, limit=limit)
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for item in payload.get("items", []):
+        location = normalize_location_name(item.get("city") or item.get("code"))
+        normalized = location.casefold()
+        if location and normalized not in seen:
+            candidates.append(location)
+            seen.add(normalized)
+
+    result = {
+        "payload": payload,
+        "candidates": candidates,
+    }
+    append_debug_log(
+        config,
+        "rotation.candidates.loaded",
+        candidate_count=len(candidates),
+        candidates=candidates,
+        payload={
+            "success": payload.get("success"),
+            "message": payload.get("message"),
+            "returncode": payload.get("returncode"),
+        },
+    )
+    return result
+
+
+def try_rotation_location(
+    config: dict[str, Any],
+    location: str,
+    output_lines: list[str],
+) -> dict[str, Any]:
+    current_status = get_adguardvpn_status(config, persist_last_good=False)
+    current_location = current_status.get("location")
+    step: dict[str, Any] = {
+        "location": location,
+        "current_location": current_location,
+        "switched": False,
+    }
+
+    if same_location(current_location, location):
+        message = f"Skipping location {location} because it is already current"
+        append_rotation_log(config, message)
+        output_lines.append(message)
+    else:
+        message = f"Trying location: {location}"
+        append_rotation_log(config, message)
+        output_lines.append(message)
+        step["disconnect"] = run_adguardvpn_cli(config, ["disconnect"])
+        time.sleep(3)
+        step["connect"] = run_adguardvpn_cli(config, ["connect", "-l", location])
+        step["switched"] = True
+        time.sleep(config["vpn"]["switch_delay"])
+    append_debug_log(config, "rotation.location.status_before_check", step=step)
+
+    status_after = get_adguardvpn_status(config, persist_last_good=False)
+    step["status"] = status_after
+    check_result = execute_http_check(config, log_failures=True)
+    update_last_check_state(check_result)
+    step["check"] = check_result
+
+    if check_result.get("success"):
+        final_location = status_after.get("location") or location
+        write_last_good_location(config, final_location)
+        success_message = f"SUCCESS: resource reachable via {final_location}"
+        append_rotation_log(config, success_message)
+        output_lines.append(success_message)
+        step["success"] = True
+        step["final_location"] = final_location
+        append_debug_log(config, "rotation.location.succeeded", step=step)
+        return step
+
+    failure_message = f"FAILED: resource unreachable via {location}"
+    append_rotation_log(config, failure_message)
+    output_lines.append(failure_message)
+    step["success"] = False
+    append_debug_log(config, "rotation.location.failed", step=step)
+    return step
+
+
+def try_rotation_quick_connect(config: dict[str, Any], output_lines: list[str]) -> dict[str, Any]:
+    append_rotation_log(config, "Fallback: trying quick connect")
+    output_lines.append("Fallback: trying quick connect")
+    step: dict[str, Any] = {
+        "location": None,
+        "disconnect": run_adguardvpn_cli(config, ["disconnect"]),
+    }
+    time.sleep(3)
+    step["connect"] = run_adguardvpn_cli(config, ["connect"])
+    time.sleep(config["vpn"]["switch_delay"])
+    append_debug_log(config, "rotation.quick_connect.command_result", step=step)
+
+    status_after = get_adguardvpn_status(config, persist_last_good=False)
+    step["status"] = status_after
+    check_result = execute_http_check(config, log_failures=True)
+    update_last_check_state(check_result)
+    step["check"] = check_result
+
+    if check_result.get("success"):
+        final_location = status_after.get("location")
+        write_last_good_location(config, final_location)
+        success_message = f"SUCCESS: resource reachable via {final_location or 'quick connect'}"
+        append_rotation_log(config, success_message)
+        output_lines.append(success_message)
+        step["success"] = True
+        step["final_location"] = final_location
+        append_debug_log(config, "rotation.quick_connect.succeeded", step=step)
+        return step
+
+    append_rotation_log(config, "ERROR: no working location found")
+    output_lines.append("ERROR: no working location found")
+    step["success"] = False
+    append_debug_log(config, "rotation.quick_connect.failed", step=step)
+    return step
 
 
 def run_rotation(config: dict[str, Any]) -> dict[str, Any]:
     with ACTION_LOCK:
         generation = generate_script(config)
-        script_path = Path(generation["script_path"])
-        runner = shlex.split(config["panel"]["script_runner"])
-        if not runner:
-            raise ValueError("Field 'panel.script_runner' must not be empty")
-
-        if shutil.which(runner[0]) is None:
+        command = [config["autostart"]["python_bin"], "vpn_panel_server.py", "rotate"]
+        append_debug_log(
+            config,
+            "rotation.started",
+            command=command,
+            test_url=config["vpn"]["test_url"],
+            top_count=config["vpn"]["top_count"],
+        )
+        acquired, active_pid = acquire_rotation_file_lock(config)
+        if not acquired:
+            message = (
+                f"Переключение уже выполняется (PID {active_pid})."
+                if active_pid
+                else "Не удалось установить lock-файл для переключения."
+            )
             result = {
-                "success": False,
-                "message": f"Команда запуска '{runner[0]}' не найдена в PATH.",
+                "success": bool(active_pid),
+                "message": message,
                 "executed_at": utc_now(),
                 "stdout": "",
-                "stderr": "",
-                "returncode": None,
-                "command": runner + [str(script_path)],
+                "stderr": "" if active_pid else message,
+                "returncode": 0 if active_pid else 1,
+                "command": command,
+                "generated_script": generation,
+                "skipped": bool(active_pid),
             }
             with STATE_LOCK:
                 STATE["last_rotation"] = result
+            append_debug_log(config, "rotation.skipped", result=result)
             return result
 
-        command = runner + [str(script_path)]
-        timeout = max(config["vpn"]["timeout"], 30) + config["vpn"]["switch_delay"] * 3
+        output_lines: list[str] = []
+        attempts: list[dict[str, Any]] = []
         try:
-            completed = subprocess.run(
-                command,
-                cwd=str(BASE_DIR),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
+            initial_check = execute_http_check(config, log_failures=True)
+            update_last_check_state(initial_check)
+            append_debug_log(config, "rotation.initial_check", result=initial_check)
+            if initial_check.get("success"):
+                append_rotation_log(config, "OK: resource reachable, no switch needed")
+                output_lines.append("OK: resource reachable, no switch needed")
+                result = {
+                    "success": True,
+                    "message": "Ресурс уже доступен, переключение не потребовалось.",
+                    "executed_at": utc_now(),
+                    "stdout": "\n".join(output_lines),
+                    "stderr": "",
+                    "returncode": 0,
+                    "command": command,
+                    "generated_script": generation,
+                    "initial_check": initial_check,
+                    "attempts": attempts,
+                    "runner": "python-native",
+                }
+                with STATE_LOCK:
+                    STATE["last_rotation"] = result
+                append_debug_log(config, "rotation.completed", result=result)
+                return result
+
+            append_rotation_log(config, "FAIL: resource unreachable, starting location rotation")
+            output_lines.append("FAIL: resource unreachable, starting location rotation")
+
+            last_good = read_last_good_location(config)
+            append_debug_log(config, "rotation.last_good_location", last_good=last_good)
+            if last_good:
+                append_rotation_log(config, f"Trying last known good location: {last_good}")
+                output_lines.append(f"Trying last known good location: {last_good}")
+                attempt = try_rotation_location(config, last_good, output_lines)
+                attempts.append(attempt)
+                if attempt.get("success"):
+                    result = {
+                        "success": True,
+                        "message": f"Ресурс восстановлен через {attempt.get('final_location') or last_good}.",
+                        "executed_at": utc_now(),
+                        "stdout": "\n".join(output_lines),
+                        "stderr": "",
+                        "returncode": 0,
+                        "command": command,
+                        "generated_script": generation,
+                        "initial_check": initial_check,
+                        "attempts": attempts,
+                        "runner": "python-native",
+                    }
+                    with STATE_LOCK:
+                        STATE["last_rotation"] = result
+                    append_debug_log(config, "rotation.completed", result=result)
+                    return result
+
+            locations_data = get_rotation_candidates(config)
+            candidate_locations = locations_data["candidates"]
+            if not candidate_locations:
+                append_rotation_log(config, "ERROR: could not get locations list")
+                output_lines.append("ERROR: could not get locations list")
+                quick_connect = try_rotation_quick_connect(config, output_lines)
+                attempts.append(quick_connect)
+                final_success = bool(quick_connect.get("success"))
+                result = {
+                    "success": final_success,
+                    "message": (
+                        f"Список локаций не получен, но quick connect восстановил доступ через {quick_connect.get('final_location') or 'текущую локацию'}."
+                        if final_success
+                        else "Не удалось получить список локаций и quick connect тоже не помог."
+                    ),
+                    "executed_at": utc_now(),
+                    "stdout": "\n".join(output_lines),
+                    "stderr": "",
+                    "returncode": 0 if final_success else 1,
+                    "command": command,
+                    "generated_script": generation,
+                    "initial_check": initial_check,
+                    "attempts": attempts,
+                    "locations": locations_data["payload"],
+                    "runner": "python-native",
+                }
+                with STATE_LOCK:
+                    STATE["last_rotation"] = result
+                append_debug_log(config, "rotation.completed", result=result)
+                return result
+
+            for location in candidate_locations:
+                if same_location(location, last_good):
+                    continue
+                attempt = try_rotation_location(config, location, output_lines)
+                attempts.append(attempt)
+                if attempt.get("success"):
+                    result = {
+                        "success": True,
+                        "message": f"Ресурс восстановлен через {attempt.get('final_location') or location}.",
+                        "executed_at": utc_now(),
+                        "stdout": "\n".join(output_lines),
+                        "stderr": "",
+                        "returncode": 0,
+                        "command": command,
+                        "generated_script": generation,
+                        "initial_check": initial_check,
+                        "attempts": attempts,
+                        "locations": locations_data["payload"],
+                        "runner": "python-native",
+                    }
+                    with STATE_LOCK:
+                        STATE["last_rotation"] = result
+                    append_debug_log(config, "rotation.completed", result=result)
+                    return result
+
+            quick_connect = try_rotation_quick_connect(config, output_lines)
+            attempts.append(quick_connect)
+            final_success = bool(quick_connect.get("success"))
+            message = (
+                f"Ресурс восстановлен через {quick_connect.get('final_location') or 'quick connect'}."
+                if final_success
+                else "Не удалось подобрать рабочую локацию."
             )
             result = {
-                "success": completed.returncode == 0,
-                "message": "Скрипт отработал успешно." if completed.returncode == 0 else "Скрипт завершился с ошибкой.",
+                "success": final_success,
+                "message": message,
                 "executed_at": utc_now(),
-                "stdout": completed.stdout,
-                "stderr": completed.stderr,
-                "returncode": completed.returncode,
+                "stdout": "\n".join(output_lines),
+                "stderr": "",
+                "returncode": 0 if final_success else 1,
                 "command": command,
+                "generated_script": generation,
+                "initial_check": initial_check,
+                "attempts": attempts,
+                "locations": locations_data["payload"],
+                "runner": "python-native",
             }
-        except subprocess.TimeoutExpired as exc:
+        except Exception as exc:  # noqa: BLE001
             result = {
                 "success": False,
-                "message": "Запуск скрипта превысил таймаут.",
+                "message": str(exc),
                 "executed_at": utc_now(),
-                "stdout": exc.stdout or "",
-                "stderr": exc.stderr or "",
-                "returncode": None,
+                "stdout": "\n".join(output_lines),
+                "stderr": str(exc),
+                "returncode": 1,
                 "command": command,
+                "generated_script": generation,
+                "attempts": attempts,
+                "runner": "python-native",
             }
+            append_rotation_log(config, f"ERROR: rotation crashed: {exc}")
+            append_debug_log(config, "rotation.crashed", error=str(exc), attempts=attempts)
+        finally:
+            release_rotation_file_lock(config)
 
         with STATE_LOCK:
             STATE["last_rotation"] = result
+        append_debug_log(config, "rotation.completed", result=result)
         return result
 
 
@@ -525,16 +958,19 @@ def run_adguardvpn_cli(
         }
 
     command = cli_parts + args
+    append_debug_log(config, "cli.command.started", command=command, timeout=timeout or config["adguardvpn"]["command_timeout"])
     try:
-        completed = subprocess.run(
-            command,
-            cwd=str(BASE_DIR),
-            capture_output=True,
-            text=True,
-            timeout=timeout or config["adguardvpn"]["command_timeout"],
-            check=False,
-        )
-        return {
+        with VPN_COMMAND_LOCK:
+            completed = subprocess.run(
+                command,
+                cwd=str(BASE_DIR),
+                env=build_command_env(),
+                capture_output=True,
+                text=True,
+                timeout=timeout or config["adguardvpn"]["command_timeout"],
+                check=False,
+            )
+        result = {
             "success": completed.returncode == 0,
             "available": True,
             "message": "Команда выполнена." if completed.returncode == 0 else "Команда завершилась с ошибкой.",
@@ -544,8 +980,10 @@ def run_adguardvpn_cli(
             "returncode": completed.returncode,
             "command": command,
         }
+        append_debug_log(config, "cli.command.completed", result=result)
+        return result
     except subprocess.TimeoutExpired as exc:
-        return {
+        result = {
             "success": False,
             "available": True,
             "message": "Команда adguardvpn-cli превысила таймаут.",
@@ -555,12 +993,16 @@ def run_adguardvpn_cli(
             "returncode": None,
             "command": command,
         }
+        append_debug_log(config, "cli.command.timeout", result=result)
+        return result
 
 
 def parse_adguardvpn_status(result: dict[str, Any]) -> dict[str, Any]:
+    command_success = result.get("success", False)
     status = {
         "available": result.get("available", False),
-        "success": result.get("success", False),
+        "success": command_success,
+        "command_success": command_success,
         "message": result.get("message", ""),
         "executed_at": result.get("executed_at"),
         "connected": False,
@@ -575,11 +1017,11 @@ def parse_adguardvpn_status(result: dict[str, Any]) -> dict[str, Any]:
         "command": result.get("command", []),
     }
 
-    if not result.get("success"):
-        return status
-
     text = result.get("stdout", "").replace("\r", "")
     clean_text = strip_ansi(text)
+    if not clean_text.strip():
+        return status
+
     parsed: dict[str, str] = {}
     for line in clean_text.splitlines():
         if not re.match(r"^[A-Za-z][A-Za-z0-9 _-]*:\s*", line):
@@ -613,8 +1055,10 @@ def parse_adguardvpn_status(result: dict[str, Any]) -> dict[str, Any]:
     if state_value:
         connected = connected or "connected" in state_value
 
+    parsed_success = bool(clean_text.strip())
     status.update(
         {
+            "success": command_success or parsed_success,
             "connected": connected,
             "location": location,
             "account": account,
@@ -625,13 +1069,17 @@ def parse_adguardvpn_status(result: dict[str, Any]) -> dict[str, Any]:
             "clean_raw": clean_text,
         }
     )
+    if not command_success and status["message"] == "Команда завершилась с ошибкой.":
+        status["message"] = "Команда вернула ненулевой код, но статус был прочитан."
     return status
 
 
 def parse_adguardvpn_locations(result: dict[str, Any]) -> dict[str, Any]:
+    command_success = result.get("success", False)
     payload = {
         "available": result.get("available", False),
-        "success": result.get("success", False),
+        "success": command_success,
+        "command_success": command_success,
         "message": result.get("message", ""),
         "executed_at": result.get("executed_at"),
         "items": [],
@@ -641,10 +1089,12 @@ def parse_adguardvpn_locations(result: dict[str, Any]) -> dict[str, Any]:
         "command": result.get("command", []),
     }
 
-    if not result.get("success"):
+    raw_text = result.get("stdout", "").replace("\r", "")
+    clean_raw = strip_ansi(raw_text)
+    if not clean_raw.strip():
         return payload
 
-    lines = strip_ansi(result.get("stdout", "").replace("\r", "")).splitlines()
+    lines = clean_raw.splitlines()
     header_found = False
     items: list[dict[str, str]] = []
     for line in lines:
@@ -675,14 +1125,18 @@ def parse_adguardvpn_locations(result: dict[str, Any]) -> dict[str, Any]:
         )
 
     payload["items"] = items
-    payload["message"] = f"Найдено локаций: {len(items)}" if items else payload["message"]
+    if items:
+        payload["success"] = True
+        payload["message"] = f"Найдено локаций: {len(items)}"
+    elif not command_success and payload["message"] == "Команда завершилась с ошибкой.":
+        payload["message"] = "Команда вернула ненулевой код, список локаций не распознан."
     payload["clean_raw"] = "\n".join(lines)
     return payload
 
 
-def get_adguardvpn_status(config: dict[str, Any]) -> dict[str, Any]:
+def get_adguardvpn_status(config: dict[str, Any], *, persist_last_good: bool = True) -> dict[str, Any]:
     result = parse_adguardvpn_status(run_adguardvpn_cli(config, ["status"]))
-    if result.get("connected") and result.get("location"):
+    if persist_last_good and result.get("connected") and result.get("location"):
         write_last_good_location(config, result["location"])
     with STATE_LOCK:
         STATE["last_vpn_status"] = result
@@ -691,9 +1145,10 @@ def get_adguardvpn_status(config: dict[str, Any]) -> dict[str, Any]:
 
 def get_adguardvpn_locations(config: dict[str, Any], limit: int | None = None) -> dict[str, Any]:
     safe_limit = limit or config["adguardvpn"]["locations_limit"]
-    result = parse_adguardvpn_locations(
-        run_adguardvpn_cli(config, ["list-locations", str(safe_limit)])
-    )
+    result = parse_adguardvpn_locations(run_adguardvpn_cli(config, ["list-locations"]))
+    result["items"] = result.get("items", [])[:safe_limit]
+    if result.get("items"):
+        result["message"] = f"Найдено локаций: {len(result['items'])}"
     with STATE_LOCK:
         STATE["last_vpn_locations"] = result
     return result
@@ -737,6 +1192,10 @@ def render_autostart_start_script(config: dict[str, Any]) -> str:
     return "\n".join(
         [
             "#!/opt/bin/sh",
+            "",
+            "export SSL_CERT_FILE=/opt/etc/ssl/certs/ca-certificates.crt",
+            "export HOME=/root",
+            "PATH=/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
             "",
             f'APP_DIR={shlex.quote(autostart["app_dir"])}',
             f'PYTHON_BIN={shlex.quote(autostart["python_bin"])}',
@@ -958,6 +1417,7 @@ def collect_state(config: dict[str, Any]) -> dict[str, Any]:
     generated_path = resolve_local_path(config["panel"]["generated_script"])
     source_path = resolve_local_path(config["panel"]["source_script"])
     log_path = Path(config["paths"]["log_file"])
+    debug_log_path = Path(config["logging"]["debug_log_file"])
 
     with STATE_LOCK:
         snapshot = deep_copy(STATE)
@@ -983,6 +1443,17 @@ def collect_state(config: dict[str, Any]) -> dict[str, Any]:
             "path": str(log_path),
             "exists": log_path.exists(),
             "size": log_path.stat().st_size if log_path.exists() else 0,
+        },
+        "debug_log_file": {
+            "path": str(debug_log_path),
+            "exists": debug_log_path.exists(),
+            "size": debug_log_path.stat().st_size if debug_log_path.exists() else 0,
+            "enabled": bool(config["logging"]["debug_enabled"]),
+        },
+        "logging": {
+            "debug_enabled": bool(config["logging"]["debug_enabled"]),
+            "debug_max_bytes": config["logging"]["debug_max_bytes"],
+            "debug_backup_count": config["logging"]["debug_backup_count"],
         },
         "resource_count": len(config.get("resources", {}).get("links", [])),
         "last_good_location": last_good_location,
@@ -1030,11 +1501,32 @@ class PanelHandler(BaseHTTPRequestHandler):
             if self.path.startswith("/api/logs"):
                 config = load_config()
                 log_path = Path(config["paths"]["log_file"])
+                debug_log_path = Path(config["logging"]["debug_log_file"])
+                parsed = urlparse(self.path)
+                params = parse_qs(parsed.query)
+                kind = params.get("kind", ["combined"])[0]
+                if kind == "debug":
+                    return self.send_json(
+                        {
+                            "content": tail_file(debug_log_path, 200),
+                            "path": str(debug_log_path),
+                            "exists": debug_log_path.exists(),
+                            "kind": "debug",
+                            "debug_enabled": bool(config["logging"]["debug_enabled"]),
+                        }
+                    )
                 return self.send_json(
                     {
                         "content": tail_file(log_path, 200),
                         "path": str(log_path),
                         "exists": log_path.exists(),
+                        "kind": "main",
+                        "debug": {
+                            "content": tail_file(debug_log_path, 200),
+                            "path": str(debug_log_path),
+                            "exists": debug_log_path.exists(),
+                            "enabled": bool(config["logging"]["debug_enabled"]),
+                        },
                     }
                 )
 
@@ -1105,6 +1597,11 @@ class PanelHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     config = ensure_config()
+    if len(sys.argv) > 1 and sys.argv[1] == "rotate":
+        result = run_rotation(config)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        raise SystemExit(0 if result.get("success") else 1)
+
     generate_script(config)
     host = config["panel"]["host"]
     port = config["panel"]["port"]

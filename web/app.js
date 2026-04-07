@@ -40,6 +40,10 @@ const fields = [
   "paths.good_file",
   "paths.tmp_file",
   "paths.body_file",
+  "logging.debug_enabled",
+  "logging.debug_log_file",
+  "logging.debug_max_bytes",
+  "logging.debug_backup_count",
 ];
 
 function byId(id) {
@@ -265,6 +269,7 @@ function buildConfigFromForm() {
     adguardvpn: {},
     autostart: {},
     paths: {},
+    logging: {},
     resources: { links: [] },
   };
 
@@ -437,6 +442,9 @@ function formatVpnStatusText(status) {
   const lines = [];
   lines.push(`CLI: ${status.available ? "доступен" : "недоступен"}`);
   lines.push(`Команда: ${status.command?.join(" ") || "-"}`);
+  if (status.returncode !== null && status.returncode !== undefined) {
+    lines.push(`Код возврата: ${status.returncode}`);
+  }
   lines.push(`Статус: ${status.connected ? "подключено" : "не подключено"}`);
   lines.push(`Локация: ${status.location || "не определена"}`);
   if (status.mode) {
@@ -451,6 +459,10 @@ function formatVpnStatusText(status) {
   if (status.stderr) {
     lines.push(`stderr: ${status.stderr.trim()}`);
   }
+  const statusOutput = (status.clean_raw || status.raw || "").trim();
+  if (statusOutput && !status.command_success) {
+    lines.push(`stdout: ${statusOutput}`);
+  }
   return lines.join("\n");
 }
 
@@ -458,6 +470,9 @@ function formatVpnLocationsText(payload) {
   const items = payload.items || [];
   const lines = [];
   lines.push(`CLI: ${payload.available ? "доступен" : "недоступен"}`);
+  if (payload.returncode !== null && payload.returncode !== undefined) {
+    lines.push(`Код возврата: ${payload.returncode}`);
+  }
   lines.push(`Локаций найдено: ${items.length}`);
   if (payload.message) {
     lines.push(`Сообщение: ${payload.message}`);
@@ -465,6 +480,10 @@ function formatVpnLocationsText(payload) {
   if (!items.length) {
     if (payload.stderr) {
       lines.push(`stderr: ${payload.stderr.trim()}`);
+    }
+    const locationsOutput = (payload.clean_raw || payload.raw || "").trim();
+    if (locationsOutput) {
+      lines.push(`stdout: ${locationsOutput}`);
     }
     return lines.join("\n");
   }
@@ -494,9 +513,24 @@ async function loadLogs() {
     return;
   }
   const logs = await fetchJson("/api/logs");
+  const sections = [];
+  sections.push(
+    logs.exists
+      ? `Основной лог: ${logs.path}\n\n${logs.content || "Лог-файл пуст."}`
+      : `Основной лог не найден: ${logs.path}`
+  );
+  if (logs.debug) {
+    const debugHeader = logs.debug.enabled
+      ? `Debug-лог: ${logs.debug.path}`
+      : `Debug-лог отключён: ${logs.debug.path}`;
+    const debugBody = logs.debug.exists
+      ? logs.debug.content || "Debug-лог пуст."
+      : "Файл debug-лога не найден.";
+    sections.push(`${debugHeader}\n\n${debugBody}`);
+  }
   setConsole(
     logsOutput,
-    logs.exists ? logs.content || "Лог-файл пуст." : `Файл ${logs.path} не найден.`
+    sections.join("\n\n====================\n\n")
   );
 }
 
