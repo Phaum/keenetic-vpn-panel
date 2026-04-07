@@ -53,10 +53,10 @@
         "group": "Router"
       },
       {
-        "name": "Home Assistant",
-        "url": "http://192.168.1.20:8123",
-        "description": "Automation",
-        "group": "Smart Home"
+        "name": "Keenetic NFQWS 2",
+        "url": "http://192.168.1.1:90",
+        "description": "Router Zapret",
+        "group": "VPN"
       }
     ]
   }

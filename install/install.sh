@@ -149,6 +149,8 @@ fi
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"
 cp -R "${EXTRACTED_DIR}/." "$APP_DIR/"
+DEFAULT_CONFIG_PATH="${TMP_DIR}/config.default.json"
+cp "${APP_DIR}/config.json" "$DEFAULT_CONFIG_PATH"
 
 CONFIG_RESTORE_STATUS="fresh"
 if [ -n "$BACKUP_CONFIG" ] && [ -f "$BACKUP_CONFIG" ]; then
@@ -173,11 +175,11 @@ except json.JSONDecodeError as exc:
 PY
   then
     cp "$BACKUP_CONFIG" "${APP_DIR}/config.json"
-    CONFIG_RESTORE_STATUS="backup"
+    CONFIG_RESTORE_STATUS="backup-valid"
   else
     BROKEN_CONFIG_COPY="${APP_DIR}/config.invalid.backup"
     cp "$BACKUP_CONFIG" "$BROKEN_CONFIG_COPY"
-    echo "Warning: existing config.json is malformed, using fresh config from repository"
+    echo "Warning: existing config.json is malformed, trying to recover valid data"
     echo "Broken backup saved to ${BROKEN_CONFIG_COPY}"
     CONFIG_RESTORE_STATUS="invalid-backup"
   fi
@@ -186,12 +188,12 @@ fi
 mkdir -p "${APP_DIR}/deploy/entware"
 mkdir -p "/opt/etc/init.d"
 
-if [ ! -f "${APP_DIR}/config.json" ]; then
+if [ ! -f "${APP_DIR}/config.json" ] || [ ! -f "$DEFAULT_CONFIG_PATH" ]; then
   echo "config.json not found after extracting the project"
   exit 1
 fi
 
-APP_DIR="$APP_DIR" /opt/bin/python3 - <<'PY'
+APP_DIR="$APP_DIR" DEFAULT_CONFIG_PATH="$DEFAULT_CONFIG_PATH" CONFIG_RESTORE_STATUS="$CONFIG_RESTORE_STATUS" /opt/bin/python3 - <<'PY'
 import json
 import os
 import socket
@@ -199,13 +201,31 @@ from pathlib import Path
 
 app_dir = Path(os.environ["APP_DIR"])
 config_path = app_dir / "config.json"
+default_config_path = Path(os.environ["DEFAULT_CONFIG_PATH"])
+restore_status = os.environ["CONFIG_RESTORE_STATUS"]
 config_text = config_path.read_text(encoding="utf-8")
 decoder = json.JSONDecoder()
 
-try:
-    config = json.loads(config_text)
-except json.JSONDecodeError:
-    config, _ = decoder.raw_decode(config_text.lstrip())
+def merge_defaults(base, override):
+    if isinstance(base, dict) and isinstance(override, dict):
+        merged = dict(base)
+        for key, value in override.items():
+            merged[key] = merge_defaults(merged.get(key), value)
+        return merged
+    return override if override is not None else base
+
+def load_first_object(text):
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload, _ = decoder.raw_decode(text.lstrip())
+    if not isinstance(payload, dict):
+        raise SystemExit("config.json root must be an object")
+    return payload
+
+default_config = load_first_object(default_config_path.read_text(encoding="utf-8"))
+current_config = load_first_object(config_text)
+config = merge_defaults(default_config, current_config)
 
 def port_is_free(host: str, port: int) -> bool:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -218,7 +238,10 @@ def port_is_free(host: str, port: int) -> bool:
     finally:
         sock.close()
 
-def choose_port(host: str, current: int) -> int:
+def choose_port(host: str, current: int, preserve_current: bool) -> int:
+    if preserve_current and current > 0 and current != 8088:
+        return current
+
     preferred = [current, 18090, 18091, 18092, 18093, 8090]
     seen: set[int] = set()
     for port in preferred:
@@ -236,17 +259,22 @@ def choose_port(host: str, current: int) -> int:
 
     raise SystemExit("Could not find a free TCP port for the panel")
 
-config["panel"]["host"] = "0.0.0.0"
+panel = config.setdefault("panel", {})
+current_host = str(panel.get("host", "")).strip()
+if current_host in {"", "127.0.0.1", "localhost"}:
+    panel["host"] = "0.0.0.0"
 
-current_port = int(config["panel"].get("port", 18090))
-config["panel"]["port"] = choose_port("0.0.0.0", current_port)
-config["autostart"]["enabled"] = True
-config["autostart"]["app_dir"] = str(app_dir)
-config["autostart"]["python_bin"] = "/opt/bin/python3"
-config["autostart"]["log_file"] = "/opt/var/log/keenetic-vpn-panel.log"
-config["autostart"]["pid_file"] = "/opt/var/run/keenetic-vpn-panel.pid"
-config["autostart"]["start_script_path"] = str(app_dir / "deploy" / "entware" / "start_vpn_panel.sh")
-config["autostart"]["init_script_path"] = "/opt/etc/init.d/S99keenetic-vpn-panel"
+current_port = int(panel.get("port", 18090))
+panel["port"] = choose_port("0.0.0.0", current_port, restore_status != "fresh")
+
+autostart = config.setdefault("autostart", {})
+autostart["enabled"] = bool(autostart.get("enabled", True))
+autostart["app_dir"] = str(app_dir)
+autostart["python_bin"] = "/opt/bin/python3"
+autostart["log_file"] = "/opt/var/log/keenetic-vpn-panel.log"
+autostart["pid_file"] = "/opt/var/run/keenetic-vpn-panel.pid"
+autostart["start_script_path"] = str(app_dir / "deploy" / "entware" / "start_vpn_panel.sh")
+autostart["init_script_path"] = "/opt/etc/init.d/S99keenetic-vpn-panel"
 
 config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")
 PY
@@ -386,8 +414,11 @@ PANEL_HOST="$(detect_lan_ip)"
 
 echo ""
 echo "Installation completed."
+if [ "$CONFIG_RESTORE_STATUS" = "backup-valid" ]; then
+  echo "Config note: previous config restored and merged with the new version."
+fi
 if [ "$CONFIG_RESTORE_STATUS" = "invalid-backup" ]; then
-  echo "Config note: malformed previous config was skipped; review ${APP_DIR}/config.invalid.backup if needed."
+  echo "Config note: malformed previous config was recovered as much as possible; review ${APP_DIR}/config.invalid.backup if needed."
 fi
 echo "Open the panel from your local network:"
 echo "http://${PANEL_HOST}:${PANEL_PORT}"
