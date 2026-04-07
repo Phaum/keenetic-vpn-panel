@@ -4,6 +4,7 @@ NAME="keenetic-vpn-panel"
 APP_DIR="/opt/share/keenetic-vpn-panel"
 START_SCRIPT="$APP_DIR/deploy/entware/start_vpn_panel.sh"
 PID_FILE="/opt/var/run/${NAME}.pid"
+LOG_FILE="/opt/var/log/keenetic-vpn-panel.log"
 
 start() {
   if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
@@ -13,8 +14,33 @@ start() {
 
   mkdir -p /opt/var/run
   "$START_SCRIPT" &
-  echo $! > "$PID_FILE"
-  echo "$NAME started"
+  PID=$!
+  echo "$PID" > "$PID_FILE"
+  sleep 2
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+    echo "$NAME started"
+    return 0
+  fi
+
+  echo "$NAME failed to start"
+  rm -f "$PID_FILE"
+  if [ -f "$LOG_FILE" ]; then
+    tail -n 40 "$LOG_FILE"
+  fi
+  return 1
+}
+
+stop_wait() {
+  PID="$1"
+  COUNT=0
+  while [ "$COUNT" -lt 10 ]; do
+    if [ -z "$PID" ] || ! kill -0 "$PID" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+    COUNT=$((COUNT + 1))
+  done
+  return 1
 }
 
 stop() {
@@ -26,6 +52,10 @@ stop() {
   PID="$(cat "$PID_FILE" 2>/dev/null)"
   if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
     kill "$PID"
+    if ! stop_wait "$PID"; then
+      echo "$NAME did not stop in time"
+      return 1
+    fi
   fi
 
   rm -f "$PID_FILE"

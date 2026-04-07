@@ -49,6 +49,32 @@ download_file() {
   exit 1
 }
 
+detect_lan_ip() {
+  if need_cmd ip; then
+    CANDIDATE="$(ip -4 -o addr show up 2>/dev/null \
+      | awk '
+          /inet / {
+            split($4, pair, "/")
+            ip = pair[1]
+            if (ip ~ /^127\./) next
+            if (ip ~ /^192\.168\./) { print ip; exit }
+            if (best == "" && ip ~ /^10\./) best = ip
+            if (fallback == "" && ip ~ /^172\.(1[6-9]|2[0-9]|3[0-1])\./) fallback = ip
+          }
+          END {
+            if (best != "") print best
+            else if (fallback != "") print fallback
+          }
+        ' | head -n 1)"
+    if [ -n "$CANDIDATE" ]; then
+      echo "$CANDIDATE"
+      return 0
+    fi
+  fi
+
+  echo "192.168.1.1"
+}
+
 install_adguardvpn_cli() {
   mkdir -p "$ADGUARDVPN_HOME"
 
@@ -157,17 +183,28 @@ def port_is_free(host: str, port: int) -> bool:
     finally:
         sock.close()
 
+def choose_port(host: str, current: int) -> int:
+    preferred = [current, 18090, 18091, 18092, 18093, 8090]
+    seen: set[int] = set()
+    for port in preferred:
+        if port in seen or port <= 0:
+            continue
+        seen.add(port)
+        if port != 8088 and port_is_free(host, port):
+            return port
+
+    for port in range(18100, 18121):
+        if port in seen:
+            continue
+        if port_is_free(host, port):
+            return port
+
+    raise SystemExit("Could not find a free TCP port for the panel")
+
 config["panel"]["host"] = "0.0.0.0"
 
 current_port = int(config["panel"].get("port", 18090))
-candidate_ports = [18090, 18091, 18092, 18093, 8090]
-if current_port == 8088 or not port_is_free("0.0.0.0", current_port):
-    for port in candidate_ports:
-        if port_is_free("0.0.0.0", port):
-            current_port = port
-            break
-
-config["panel"]["port"] = current_port
+config["panel"]["port"] = choose_port("0.0.0.0", current_port)
 config["autostart"]["enabled"] = True
 config["autostart"]["app_dir"] = str(app_dir)
 config["autostart"]["python_bin"] = "/opt/bin/python3"
@@ -202,6 +239,7 @@ NAME="keenetic-vpn-panel"
 APP_DIR="${APP_DIR}"
 START_SCRIPT="${APP_DIR}/deploy/entware/start_vpn_panel.sh"
 PID_FILE="/opt/var/run/keenetic-vpn-panel.pid"
+LOG_FILE="/opt/var/log/keenetic-vpn-panel.log"
 
 start() {
   if [ -f "\$PID_FILE" ] && kill -0 "\$(cat "\$PID_FILE")" 2>/dev/null; then
@@ -211,8 +249,33 @@ start() {
 
   mkdir -p /opt/var/run
   "\$START_SCRIPT" &
-  echo \$! > "\$PID_FILE"
-  echo "\$NAME started"
+  PID=\$!
+  echo "\$PID" > "\$PID_FILE"
+  sleep 2
+  if [ -n "\$PID" ] && kill -0 "\$PID" 2>/dev/null; then
+    echo "\$NAME started"
+    return 0
+  fi
+
+  echo "\$NAME failed to start"
+  rm -f "\$PID_FILE"
+  if [ -f "\$LOG_FILE" ]; then
+    tail -n 40 "\$LOG_FILE"
+  fi
+  return 1
+}
+
+stop_wait() {
+  PID="\$1"
+  COUNT=0
+  while [ "\$COUNT" -lt 10 ]; do
+    if [ -z "\$PID" ] || ! kill -0 "\$PID" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+    COUNT=\$((COUNT + 1))
+  done
+  return 1
 }
 
 stop() {
@@ -224,6 +287,10 @@ stop() {
   PID="\$(cat "\$PID_FILE" 2>/dev/null)"
   if [ -n "\$PID" ] && kill -0 "\$PID" 2>/dev/null; then
     kill "\$PID"
+    if ! stop_wait "\$PID"; then
+      echo "\$NAME did not stop in time"
+      return 1
+    fi
   fi
 
   rm -f "\$PID_FILE"
@@ -269,16 +336,23 @@ cp "${APP_DIR}/deploy/entware/S99keenetic-vpn-panel" "$INIT_SCRIPT_PATH"
 chmod +x "$INIT_SCRIPT_PATH"
 
 "$INIT_SCRIPT_PATH" restart || "$INIT_SCRIPT_PATH" start
+sleep 2
+if ! "$INIT_SCRIPT_PATH" status; then
+  echo "Service failed to stay running. Recent log:"
+  tail -n 60 "/opt/var/log/keenetic-vpn-panel.log" 2>/dev/null || true
+  exit 1
+fi
 
 PANEL_PORT="$(sed -n 's/.*"port":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "${APP_DIR}/config.json" | head -n 1)"
 if [ -z "$PANEL_PORT" ]; then
   PANEL_PORT="18090"
 fi
+PANEL_HOST="$(detect_lan_ip)"
 
 echo ""
 echo "Installation completed."
 echo "Open the panel from your local network:"
-echo "http://<router-lan-ip>:${PANEL_PORT}"
+echo "http://${PANEL_HOST}:${PANEL_PORT}"
 echo ""
 echo "Service status:"
 echo "${INIT_SCRIPT_PATH} status"

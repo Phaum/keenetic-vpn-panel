@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -340,6 +341,68 @@ def build_command_env() -> dict[str, str]:
     env = os.environ.copy()
     env.update(ROUTER_ENV)
     return env
+
+
+def is_private_ipv4(value: str) -> bool:
+    parts = value.split(".")
+    if len(parts) != 4 or not all(part.isdigit() for part in parts):
+        return False
+    octets = [int(part) for part in parts]
+    if octets[0] == 10:
+        return True
+    if octets[0] == 192 and octets[1] == 168:
+        return True
+    if octets[0] == 172 and 16 <= octets[1] <= 31:
+        return True
+    return False
+
+
+def detect_lan_ipv4() -> str | None:
+    if shutil.which("ip"):
+        try:
+            completed = subprocess.run(
+                ["ip", "-4", "-o", "addr", "show", "up"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            candidates: list[str] = []
+            for line in completed.stdout.splitlines():
+                match = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)/", line)
+                if not match:
+                    continue
+                ip = match.group(1)
+                if ip.startswith("127."):
+                    continue
+                if is_private_ipv4(ip):
+                    candidates.append(ip)
+            if candidates:
+                candidates.sort(
+                    key=lambda ip: (
+                        0 if ip.startswith("192.168.") else 1 if ip.startswith("10.") else 2,
+                        ip,
+                    )
+                )
+                return candidates[0]
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    try:
+        hostname_ip = socket.gethostbyname(socket.gethostname())
+        if hostname_ip and not hostname_ip.startswith("127.") and is_private_ipv4(hostname_ip):
+            return hostname_ip
+    except OSError:
+        pass
+
+    return None
+
+
+def get_panel_access_host(config: dict[str, Any]) -> str:
+    host = str(config["panel"]["host"]).strip()
+    if host and host not in {"0.0.0.0", "::", "127.0.0.1", "localhost"}:
+        return host
+    return detect_lan_ipv4() or "192.168.1.1"
 
 
 def ensure_runtime_dirs(config: dict[str, Any]) -> None:
@@ -1220,6 +1283,7 @@ def render_autostart_init_script(config: dict[str, Any]) -> str:
             f'APP_DIR={shlex.quote(autostart["app_dir"])}',
             f'START_SCRIPT={shlex.quote(autostart["start_script_path"])}',
             f'PID_FILE={shlex.quote(autostart["pid_file"])}',
+            f'LOG_FILE={shlex.quote(autostart["log_file"])}',
             "",
             "start() {",
             '  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then',
@@ -1229,8 +1293,33 @@ def render_autostart_init_script(config: dict[str, Any]) -> str:
             "",
             "  mkdir -p /opt/var/run",
             '  "$START_SCRIPT" &',
-            "  echo $! > \"$PID_FILE\"",
-            '  echo "$NAME started"',
+            "  PID=$!",
+            '  echo "$PID" > "$PID_FILE"',
+            "  sleep 2",
+            '  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then',
+            '    echo "$NAME started"',
+            "    return 0",
+            "  fi",
+            "",
+            '  echo "$NAME failed to start"',
+            '  rm -f "$PID_FILE"',
+            '  if [ -f "$LOG_FILE" ]; then',
+            '    tail -n 40 "$LOG_FILE"',
+            "  fi",
+            "  return 1",
+            "}",
+            "",
+            "stop_wait() {",
+            '  PID="$1"',
+            "  COUNT=0",
+            '  while [ "$COUNT" -lt 10 ]; do',
+            '    if [ -z "$PID" ] || ! kill -0 "$PID" 2>/dev/null; then',
+            "      return 0",
+            "    fi",
+            "    sleep 1",
+            "    COUNT=$((COUNT + 1))",
+            "  done",
+            "  return 1",
             "}",
             "",
             "stop() {",
@@ -1242,6 +1331,10 @@ def render_autostart_init_script(config: dict[str, Any]) -> str:
             '  PID="$(cat "$PID_FILE" 2>/dev/null)"',
             '  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then',
             '    kill "$PID"',
+            '    if ! stop_wait "$PID"; then',
+            '      echo "$NAME did not stop in time"',
+            "      return 1",
+            "    fi",
             "  fi",
             "",
             '  rm -f "$PID_FILE"',
@@ -1491,7 +1584,7 @@ def collect_state(config: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "config_path": str(CONFIG_PATH),
-        "panel_url": f"http://{config['panel']['host']}:{config['panel']['port']}",
+        "panel_url": f"http://{get_panel_access_host(config)}:{config['panel']['port']}",
         "source_script": {
             "path": str(source_path),
             "exists": source_path.exists(),
@@ -1660,6 +1753,10 @@ class PanelHandler(BaseHTTPRequestHandler):
         return
 
 
+class ReusableThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
 def main() -> None:
     config = ensure_config()
     if len(sys.argv) > 1 and sys.argv[1] == "rotate":
@@ -1670,7 +1767,7 @@ def main() -> None:
     generate_script(config)
     host = config["panel"]["host"]
     port = config["panel"]["port"]
-    server = ThreadingHTTPServer((host, port), PanelHandler)
+    server = ReusableThreadingHTTPServer((host, port), PanelHandler)
     print(f"VPN panel running on http://{host}:{port}")
     server.serve_forever()
 
