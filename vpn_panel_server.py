@@ -175,9 +175,48 @@ def write_config(config: dict[str, Any]) -> None:
     )
 
 
+def backup_config_snapshot(content: str, suffix: str) -> Path | None:
+    backup_path = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.{suffix}")
+    try:
+        if not backup_path.exists():
+            backup_path.write_text(content, encoding="utf-8")
+        return backup_path
+    except OSError:
+        return None
+
+
+def decode_config_text(text: str) -> tuple[dict[str, Any], bool]:
+    try:
+        payload = json.loads(text)
+        if not isinstance(payload, dict):
+            raise ValueError("config.json root must be an object")
+        return payload, False
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        stripped = text.lstrip()
+        payload, end = decoder.raw_decode(stripped)
+        if not isinstance(payload, dict):
+            raise ValueError("config.json root must be an object")
+        trailing = stripped[end:].strip()
+        return payload, bool(trailing)
+
+
 def load_config() -> dict[str, Any]:
-    raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    return merge_defaults(DEFAULT_CONFIG, raw)
+    text = CONFIG_PATH.read_text(encoding="utf-8")
+    try:
+        raw, recovered = decode_config_text(text)
+    except Exception:
+        backup_config_snapshot(text, "invalid.backup")
+        source = BASE_DIR / DEFAULT_CONFIG["panel"]["source_script"]
+        raw = import_from_shell_script(source)
+        write_config(raw)
+        return merge_defaults(DEFAULT_CONFIG, raw)
+
+    merged = merge_defaults(DEFAULT_CONFIG, raw)
+    if recovered:
+        backup_config_snapshot(text, "recovered.backup")
+        write_config(merged)
+    return merged
 
 
 def ensure_config() -> dict[str, Any]:
