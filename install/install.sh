@@ -150,8 +150,37 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"
 cp -R "${EXTRACTED_DIR}/." "$APP_DIR/"
 
+CONFIG_RESTORE_STATUS="fresh"
 if [ -n "$BACKUP_CONFIG" ] && [ -f "$BACKUP_CONFIG" ]; then
-  cp "$BACKUP_CONFIG" "${APP_DIR}/config.json"
+  if BACKUP_CONFIG="$BACKUP_CONFIG" /opt/bin/python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+backup_path = Path(os.environ["BACKUP_CONFIG"])
+text = backup_path.read_text(encoding="utf-8")
+decoder = json.JSONDecoder()
+
+try:
+    json.loads(text)
+except json.JSONDecodeError as exc:
+    try:
+        payload, end = decoder.raw_decode(text.lstrip())
+    except json.JSONDecodeError:
+        raise SystemExit(1) from exc
+    if not isinstance(payload, dict):
+        raise SystemExit(1)
+PY
+  then
+    cp "$BACKUP_CONFIG" "${APP_DIR}/config.json"
+    CONFIG_RESTORE_STATUS="backup"
+  else
+    BROKEN_CONFIG_COPY="${APP_DIR}/config.invalid.backup"
+    cp "$BACKUP_CONFIG" "$BROKEN_CONFIG_COPY"
+    echo "Warning: existing config.json is malformed, using fresh config from repository"
+    echo "Broken backup saved to ${BROKEN_CONFIG_COPY}"
+    CONFIG_RESTORE_STATUS="invalid-backup"
+  fi
 fi
 
 mkdir -p "${APP_DIR}/deploy/entware"
@@ -170,7 +199,13 @@ from pathlib import Path
 
 app_dir = Path(os.environ["APP_DIR"])
 config_path = app_dir / "config.json"
-config = json.loads(config_path.read_text(encoding="utf-8"))
+config_text = config_path.read_text(encoding="utf-8")
+decoder = json.JSONDecoder()
+
+try:
+    config = json.loads(config_text)
+except json.JSONDecodeError:
+    config, _ = decoder.raw_decode(config_text.lstrip())
 
 def port_is_free(host: str, port: int) -> bool:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -351,6 +386,9 @@ PANEL_HOST="$(detect_lan_ip)"
 
 echo ""
 echo "Installation completed."
+if [ "$CONFIG_RESTORE_STATUS" = "invalid-backup" ]; then
+  echo "Config note: malformed previous config was skipped; review ${APP_DIR}/config.invalid.backup if needed."
+fi
 echo "Open the panel from your local network:"
 echo "http://${PANEL_HOST}:${PANEL_PORT}"
 echo ""
