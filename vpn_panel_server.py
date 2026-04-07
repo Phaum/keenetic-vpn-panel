@@ -1154,9 +1154,21 @@ def parse_adguardvpn_status(result: dict[str, Any]) -> dict[str, Any]:
         or parsed.get("connection status")
         or ""
     ).lower()
-    connected = bool(location) or "connected" in clean_text.lower()
+    lowered_text = clean_text.lower()
+    disconnected_markers = (
+        "not connected",
+        "disconnected",
+        "failed to disconnect",
+        "process is not running",
+    )
+    has_disconnect_marker = any(marker in lowered_text for marker in disconnected_markers)
+    connected = bool(location) or (
+        "connected" in lowered_text and "not connected" not in lowered_text
+    )
     if state_value:
-        connected = connected or "connected" in state_value
+        connected = "connected" in state_value and "not connected" not in state_value
+    if has_disconnect_marker:
+        connected = False
 
     parsed_success = bool(clean_text.strip())
     status.update(

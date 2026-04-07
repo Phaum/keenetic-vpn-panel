@@ -420,7 +420,7 @@ async function loadAutostartStatus() {
   return status;
 }
 
-async function runVpnAction(url, payload, successPrefix) {
+async function runVpnAction(url, payload, successPrefix, failurePrefix) {
   setVpnMessage("Выполняется...");
   const result = await fetchJson(url, {
     method: "POST",
@@ -428,7 +428,10 @@ async function runVpnAction(url, payload, successPrefix) {
     body: JSON.stringify(payload || {}),
   });
   const status = result.status || result;
-  const summary = [successPrefix, "", formatVpnStatusText(status)];
+  const prefix = result.success === false
+    ? (failurePrefix || "Команда завершилась с ошибкой.")
+    : successPrefix;
+  const summary = [prefix, "", formatVpnStatusText(status)];
   if (result.stdout || result.stderr) {
     summary.push("", "CLI output:");
     if (result.stdout) {
@@ -717,7 +720,12 @@ function bindActions() {
 
   bindClick("vpn-quick-connect", async () => {
     try {
-      await runVpnAction("/api/adguardvpn/connect", {}, "Quick connect выполнен.");
+      await runVpnAction(
+        "/api/adguardvpn/connect",
+        {},
+        "Quick connect выполнен.",
+        "Quick connect завершился с ошибкой."
+      );
     } catch (error) {
       setVpnMessage(error.message);
     }
@@ -729,7 +737,8 @@ function bindActions() {
       await runVpnAction(
         "/api/adguardvpn/connect",
         location ? { location } : {},
-        location ? `Подключение к ${location} выполнено.` : "Quick connect выполнен."
+        location ? `Подключение к ${location} выполнено.` : "Quick connect выполнен.",
+        location ? `Подключение к ${location} завершилось с ошибкой.` : "Quick connect завершился с ошибкой."
       );
     } catch (error) {
       setVpnMessage(error.message);
@@ -738,7 +747,12 @@ function bindActions() {
 
   bindClick("vpn-disconnect", async () => {
     try {
-      await runVpnAction("/api/adguardvpn/disconnect", {}, "Отключение выполнено.");
+      await runVpnAction(
+        "/api/adguardvpn/disconnect",
+        {},
+        "Отключение выполнено.",
+        "Отключение завершилось с ошибкой."
+      );
     } catch (error) {
       setVpnMessage(error.message);
     }
