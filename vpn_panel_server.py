@@ -1607,6 +1607,50 @@ def run_project_update(config: dict[str, Any]) -> dict[str, Any]:
         return result
 
 
+def clear_logs(config: dict[str, Any]) -> dict[str, Any]:
+    log_paths = [
+        Path(config["paths"]["log_file"]),
+        Path(config["logging"]["debug_log_file"]),
+    ]
+    cleared: list[str] = []
+    missing: list[str] = []
+    removed_rotations: list[str] = []
+
+    for path in log_paths:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+
+        if path.exists():
+            try:
+                path.write_text("", encoding="utf-8")
+                cleared.append(str(path))
+            except OSError:
+                missing.append(str(path))
+        else:
+            missing.append(str(path))
+
+        for rotated in sorted(path.parent.glob(f"{path.name}.*")):
+            try:
+                rotated.unlink()
+                removed_rotations.append(str(rotated))
+            except OSError:
+                continue
+
+    result = {
+        "success": True,
+        "message": "Логи очищены.",
+        "executed_at": utc_now(),
+        "cleared": cleared,
+        "missing": missing,
+        "removed_rotations": removed_rotations,
+    }
+    with STATE_LOCK:
+        STATE["last_check"] = None
+    return result
+
+
 def collect_state(config: dict[str, Any]) -> dict[str, Any]:
     generated_path = resolve_local_path(config["panel"]["generated_script"])
     source_path = resolve_local_path(config["panel"]["source_script"])
@@ -1743,6 +1787,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 return self.send_json(perform_http_check(load_config()))
             if self.path == "/api/actions/rotate":
                 return self.send_json(run_rotation(load_config()))
+            if self.path == "/api/actions/clear-logs":
+                return self.send_json(clear_logs(load_config()))
             if self.path == "/api/adguardvpn/connect":
                 location = str(body.get("location", "")).strip() or None
                 return self.send_json(connect_adguardvpn(load_config(), location))

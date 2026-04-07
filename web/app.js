@@ -677,6 +677,17 @@ function bindActions() {
     }
   });
 
+  bindClick("clear-logs", async () => {
+    try {
+      setStatusMessage("Очищаю логи...");
+      const result = await fetchJson("/api/actions/clear-logs", { method: "POST" });
+      await Promise.all([loadLogs(), loadState()]);
+      setStatusMessage(`Логи очищены.\n\n${JSON.stringify(result, null, 2)}`);
+    } catch (error) {
+      setStatusMessage(error.message);
+    }
+  });
+
   bindClick("refresh-script", async () => {
     try {
       await loadScript();
