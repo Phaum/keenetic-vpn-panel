@@ -9,6 +9,10 @@ APP_DIR="${APP_DIR:-/opt/share/keenetic-vpn-panel}"
 TMP_DIR="/opt/tmp/${REPO_NAME}-install.$$"
 ARCHIVE_URL="https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/${BRANCH}"
 INIT_SCRIPT_PATH="/opt/etc/init.d/S99keenetic-vpn-panel"
+ADGUARDVPN_INSTALLER_URL="https://raw.githubusercontent.com/AdguardTeam/AdGuardVPNCLI/master/scripts/release/install.sh"
+ADGUARDVPN_HOME="${ADGUARDVPN_HOME:-/opt/home/admin}"
+ADGUARDVPN_BIN="/opt/adguardvpn_cli/adguardvpn-cli"
+ADGUARDVPN_LINK="/opt/bin/adguardvpn-cli"
 
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -45,6 +49,28 @@ download_file() {
   exit 1
 }
 
+install_adguardvpn_cli() {
+  mkdir -p "$ADGUARDVPN_HOME"
+
+  if [ -x "$ADGUARDVPN_BIN" ]; then
+    ln -sf "$ADGUARDVPN_BIN" "$ADGUARDVPN_LINK"
+    return 0
+  fi
+
+  INSTALLER_PATH="${TMP_DIR}/adguardvpn-install.sh"
+  download_file "$ADGUARDVPN_INSTALLER_URL" "$INSTALLER_PATH"
+  chmod +x "$INSTALLER_PATH"
+
+  HOME="$ADGUARDVPN_HOME" sh "$INSTALLER_PATH" -a n
+
+  if [ ! -x "$ADGUARDVPN_BIN" ]; then
+    echo "adguardvpn-cli installation finished, but $ADGUARDVPN_BIN was not found"
+    exit 1
+  fi
+
+  ln -sf "$ADGUARDVPN_BIN" "$ADGUARDVPN_LINK"
+}
+
 if [ ! -d /opt ]; then
   echo "/opt not found. Entware must be installed first."
   exit 1
@@ -59,10 +85,13 @@ mkdir -p "$TMP_DIR"
 
 opkg update
 install_pkg_if_missing ca-certificates
+install_pkg_if_missing curl
+install_pkg_if_missing sudo
 install_pkg_if_missing python3
 if ! need_cmd curl && ! need_cmd wget; then
   install_pkg_if_missing wget-ssl
 fi
+install_adguardvpn_cli
 
 ARCHIVE_PATH="${TMP_DIR}/project.tar.gz"
 download_file "$ARCHIVE_URL" "$ARCHIVE_PATH"
@@ -154,7 +183,7 @@ cat > "${APP_DIR}/deploy/entware/start_vpn_panel.sh" <<EOF
 #!/opt/bin/sh
 
 export SSL_CERT_FILE=/opt/etc/ssl/certs/ca-certificates.crt
-export HOME=/root
+export HOME=/opt/home/admin
 PATH=/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
 APP_DIR="${APP_DIR}"

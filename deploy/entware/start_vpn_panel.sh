@@ -1,7 +1,7 @@
 #!/opt/bin/sh
 
 export SSL_CERT_FILE=/opt/etc/ssl/certs/ca-certificates.crt
-export HOME=/root
+export HOME=/opt/home/admin
 PATH=/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
 APP_DIR="/opt/share/keenetic-vpn-panel"

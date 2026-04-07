@@ -148,13 +148,20 @@ cd /opt/share/keenetic-vpn-panel
 Что делает установщик:
 
 - обновляет `opkg`
-- устанавливает `python3`, `ca-certificates` и downloader при необходимости
+- устанавливает `python3`, `ca-certificates`, `curl`, `sudo` и downloader при необходимости
+- автоматически ставит `adguardvpn-cli` по инструкции для Keenetic и создаёт симлинк `/opt/bin/adguardvpn-cli`
 - скачивает проект из GitHub
 - размещает его в `/opt/share/keenetic-vpn-panel`
 - настраивает `config.json` для LAN-доступа с `host = 0.0.0.0`
 - автоматически выбирает свободный порт, если стандартный конфликтует с сервисами Keenetic
 - устанавливает автозапуск через `/opt/etc/init.d/S99keenetic-vpn-panel`
 - запускает сервис
+
+После установки `adguardvpn-cli` может потребоваться отдельный вход в аккаунт:
+
+```sh
+HOME=/opt/home/admin adguardvpn-cli login
+```
 
 После установки панель будет доступна по LAN-адресу роутера на выбранном установщиком порту.
 
@@ -165,6 +172,8 @@ cd /opt/share/keenetic-vpn-panel
 ```sh
 /bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/master/install/update.sh)"
 ```
+
+То же обновление можно запускать из веб-панели кнопкой `Обновить с GitHub`.
 
 Удаление:
 

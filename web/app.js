@@ -345,6 +345,10 @@ async function loadState() {
     "last-generation-summary",
     renderSummary(state.last_script_generation, "Готово", "Нет данных")
   );
+  setText(
+    "last-update-summary",
+    renderSummary(state.last_update_action, "Успех", "Нет данных")
+  );
   setText("panel-url", state.panel_url || "-");
   setText("sidebar-panel-url", state.panel_url || "-");
   setText("aside-panel-url", state.panel_url || "-");
@@ -638,6 +642,14 @@ function bindActions() {
     }
   });
 
+  bindClick("update-project", async () => {
+    try {
+      await runAction("/api/actions/update-project", "Обновление с GitHub завершено.");
+    } catch (error) {
+      setStatusMessage(error.message);
+    }
+  });
+
   bindClick("reload-config", async () => {
     try {
       await loadConfig();
@@ -751,6 +763,17 @@ function bindActions() {
         { stop_now: true },
         "Автозапуск удалён."
       );
+    } catch (error) {
+      setAutostartMessage(error.message);
+    }
+  });
+
+  bindClick("project-update", async () => {
+    try {
+      setAutostartMessage("Запускаю обновление с GitHub...");
+      const result = await fetchJson("/api/actions/update-project", { method: "POST" });
+      setAutostartMessage(JSON.stringify(result, null, 2));
+      await Promise.all([loadState(), loadLogs(), loadScript(), loadAutostartStatus()]);
     } catch (error) {
       setAutostartMessage(error.message);
     }

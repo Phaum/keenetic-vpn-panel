@@ -116,12 +116,13 @@ STATE: dict[str, Any] = {
     "last_vpn_status": None,
     "last_vpn_locations": None,
     "last_autostart_action": None,
+    "last_update_action": None,
 }
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 ROUTER_ENV = {
     "SSL_CERT_FILE": "/opt/etc/ssl/certs/ca-certificates.crt",
-    "HOME": "/root",
+    "HOME": "/opt/home/admin",
     "PATH": "/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
 }
 
@@ -1194,7 +1195,7 @@ def render_autostart_start_script(config: dict[str, Any]) -> str:
             "#!/opt/bin/sh",
             "",
             "export SSL_CERT_FILE=/opt/etc/ssl/certs/ca-certificates.crt",
-            "export HOME=/root",
+            "export HOME=/opt/home/admin",
             "PATH=/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
             "",
             f'APP_DIR={shlex.quote(autostart["app_dir"])}',
@@ -1413,6 +1414,67 @@ def remove_autostart(config: dict[str, Any], stop_now: bool = True) -> dict[str,
     return payload
 
 
+def run_project_update(config: dict[str, Any]) -> dict[str, Any]:
+    with ACTION_LOCK:
+        update_script = (BASE_DIR / "install" / "update.sh").resolve()
+        command = [str(update_script)]
+
+        if not update_script.exists():
+            result = {
+                "success": False,
+                "message": "Скрипт обновления не найден.",
+                "executed_at": utc_now(),
+                "stdout": "",
+                "stderr": "",
+                "returncode": None,
+                "command": command,
+            }
+            with STATE_LOCK:
+                STATE["last_update_action"] = result
+            return result
+
+        try:
+            update_script.chmod(update_script.stat().st_mode | 0o111)
+        except OSError:
+            pass
+
+        append_debug_log(config, "project_update.started", command=command)
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(BASE_DIR),
+                env=build_command_env(),
+                capture_output=True,
+                text=True,
+                timeout=900,
+                check=False,
+            )
+            result = {
+                "success": completed.returncode == 0,
+                "message": "Обновление завершено." if completed.returncode == 0 else "Обновление завершилось с ошибкой.",
+                "executed_at": utc_now(),
+                "stdout": completed.stdout,
+                "stderr": completed.stderr,
+                "returncode": completed.returncode,
+                "command": command,
+            }
+        except subprocess.TimeoutExpired as exc:
+            result = {
+                "success": False,
+                "message": "Скрипт обновления превысил таймаут.",
+                "executed_at": utc_now(),
+                "stdout": exc.stdout or "",
+                "stderr": exc.stderr or "",
+                "returncode": None,
+                "command": command,
+            }
+
+        with STATE_LOCK:
+            STATE["last_update_action"] = result
+        append_debug_log(config, "project_update.completed", result=result)
+        return result
+
+
 def collect_state(config: dict[str, Any]) -> dict[str, Any]:
     generated_path = resolve_local_path(config["panel"]["generated_script"])
     source_path = resolve_local_path(config["panel"]["source_script"])
@@ -1463,6 +1525,7 @@ def collect_state(config: dict[str, Any]) -> dict[str, Any]:
         "last_cli_action": snapshot.get("last_cli_action"),
         "last_vpn_status": snapshot.get("last_vpn_status"),
         "last_autostart_action": snapshot.get("last_autostart_action"),
+        "last_update_action": snapshot.get("last_update_action"),
     }
 
 
@@ -1559,6 +1622,8 @@ class PanelHandler(BaseHTTPRequestHandler):
             if self.path == "/api/autostart/remove":
                 stop_now = bool(body.get("stop_now", True))
                 return self.send_json(remove_autostart(load_config(), stop_now=stop_now))
+            if self.path == "/api/actions/update-project":
+                return self.send_json(run_project_update(load_config()))
 
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
         except ValueError as exc:
