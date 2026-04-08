@@ -92,6 +92,10 @@
             <span class="meta-label">Последнее обновление</span>
             <p id="last-update-summary">Нет данных</p>
           </article>
+          <article class="status-card">
+            <span class="meta-label">Transparent proxy</span>
+            <p id="transparent-proxy-summary">Нет данных</p>
+          </article>
           <article class="status-card compact">
             <span class="meta-label">Состояние панели</span>
             <p id="panel-url">-</p>
@@ -168,6 +172,22 @@
             </div>
           </div>
           <pre id="action-output" class="console compact-console">Ожидание действий.</pre>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <p class="section-eyebrow">Transparent proxy</p>
+              <h3>redsocks и iptables</h3>
+            </div>
+            <div class="section-actions">
+              <button class="ghost small" id="transparent-proxy-refresh-status">Обновить статус</button>
+              <button class="ghost small" id="transparent-proxy-sync">Синхронизировать</button>
+              <button class="ghost small" id="transparent-proxy-stop">Остановить</button>
+            </div>
+          </div>
+          <p class="meta-label">Последнее действие: <strong id="transparent-proxy-last-action">Нет данных</strong></p>
+          <pre id="transparent-proxy-output" class="console compact-console">Transparent proxy ещё не загружен.</pre>
         </section>
       </main>
     </div>

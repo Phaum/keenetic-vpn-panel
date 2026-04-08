@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import ipaddress
 import re
 import shlex
 import shutil
@@ -64,6 +65,24 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "start_script_path": "/opt/share/keenetic-vpn-panel/deploy/entware/start_vpn_panel.sh",
         "init_script_path": "/opt/etc/init.d/S99keenetic-vpn-panel",
     },
+    "transparent_proxy": {
+        "mode": "router-only",
+        "enabled": False,
+        "proxy_type": "auto",
+        "proxy_host": "127.0.0.1",
+        "proxy_port": 1080,
+        "listen_ip": "127.0.0.1",
+        "listen_port": 12345,
+        "redsocks_bin": "redsocks",
+        "redsocks_pid_file": "generated/redsocks.pid",
+        "redsocks_config_path": "generated/redsocks.conf",
+        "iptables_path": "iptables",
+        "chain_name": "KVPN_REDSOCKS",
+        "target_subnets": "192.168.1.0/24",
+        "bypass_subnets": "0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4",
+        "rules_script_path": "generated/apply-transparent-proxy.sh",
+        "stop_script_path": "generated/remove-transparent-proxy.sh",
+    },
     "paths": {
         "lock_file": "/opt/tmp/adguardvpn-switch.lock",
         "log_file": "/opt/var/log/adguardvpn-rotate.log",
@@ -123,6 +142,8 @@ STATE: dict[str, Any] = {
     "last_cli_action": None,
     "last_vpn_status": None,
     "last_vpn_locations": None,
+    "last_transparent_proxy_action": None,
+    "last_transparent_proxy_status": None,
     "last_autostart_action": None,
     "last_update_action": None,
     "automation_runtime": {
@@ -139,6 +160,8 @@ STATE: dict[str, Any] = {
 }
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+TRANSPARENT_PROXY_TYPES = {"auto", "socks5", "http-connect"}
+TRANSPARENT_PROXY_MODES = {"router-only", "transparent-redsocks"}
 ROUTER_ENV = {
     "SSL_CERT_FILE": "/opt/etc/ssl/certs/ca-certificates.crt",
     "HOME": "/opt/home/admin",
@@ -261,6 +284,48 @@ def ensure_config() -> dict[str, Any]:
     return config
 
 
+def parse_csv_items(value: Any) -> list[str]:
+    if isinstance(value, list):
+        raw_items = [str(item).strip() for item in value]
+    else:
+        raw_items = [part.strip() for part in re.split(r"[\r\n,]+", str(value or ""))]
+    return [item for item in raw_items if item]
+
+
+def normalize_csv_items(value: Any) -> str:
+    items = parse_csv_items(value)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        lowered = item.casefold()
+        if lowered in seen:
+            continue
+        deduped.append(item)
+        seen.add(lowered)
+    return ", ".join(deduped)
+
+
+def normalize_network_items(value: Any, field_name: str, *, allow_empty: bool = False) -> str:
+    items = parse_csv_items(value)
+    if not items:
+        if allow_empty:
+            return ""
+        raise ValueError(f"Field '{field_name}' must contain at least one subnet")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        try:
+            subnet = str(ipaddress.ip_network(item, strict=False))
+        except ValueError as exc:
+            raise ValueError(f"Field '{field_name}' contains invalid subnet '{item}'") from exc
+        if subnet in seen:
+            continue
+        normalized.append(subnet)
+        seen.add(subnet)
+    return ", ".join(normalized)
+
+
 def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     merged = merge_defaults(DEFAULT_CONFIG, config)
 
@@ -277,6 +342,19 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         ("autostart", "pid_file"),
         ("autostart", "start_script_path"),
         ("autostart", "init_script_path"),
+        ("transparent_proxy", "mode"),
+        ("transparent_proxy", "proxy_type"),
+        ("transparent_proxy", "proxy_host"),
+        ("transparent_proxy", "listen_ip"),
+        ("transparent_proxy", "redsocks_bin"),
+        ("transparent_proxy", "redsocks_pid_file"),
+        ("transparent_proxy", "redsocks_config_path"),
+        ("transparent_proxy", "iptables_path"),
+        ("transparent_proxy", "chain_name"),
+        ("transparent_proxy", "target_subnets"),
+        ("transparent_proxy", "bypass_subnets"),
+        ("transparent_proxy", "rules_script_path"),
+        ("transparent_proxy", "stop_script_path"),
         ("vpn", "test_url"),
         ("vpn", "expected_text"),
         ("paths", "lock_file"),
@@ -297,6 +375,8 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         ("panel", "port"),
         ("adguardvpn", "command_timeout"),
         ("adguardvpn", "locations_limit"),
+        ("transparent_proxy", "proxy_port"),
+        ("transparent_proxy", "listen_port"),
         ("automation", "check_interval"),
         ("vpn", "top_count"),
         ("vpn", "timeout"),
@@ -320,6 +400,40 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     merged["automation"]["enabled"] = bool(merged.get("automation", {}).get("enabled", False))
     merged["autostart"]["enabled"] = bool(merged.get("autostart", {}).get("enabled", False))
     merged["logging"]["debug_enabled"] = bool(merged.get("logging", {}).get("debug_enabled", False))
+
+    transparent_proxy = merged["transparent_proxy"]
+    mode_raw = str(transparent_proxy.get("mode", "")).strip().lower()
+    if not mode_raw:
+        mode_raw = "transparent-redsocks" if bool(transparent_proxy.get("enabled", False)) else "router-only"
+    if mode_raw not in TRANSPARENT_PROXY_MODES:
+        raise ValueError(
+            "Field 'transparent_proxy.mode' must be one of: router-only, transparent-redsocks"
+        )
+    transparent_proxy["mode"] = mode_raw
+    transparent_proxy["enabled"] = mode_raw == "transparent-redsocks"
+
+    proxy_type = str(transparent_proxy.get("proxy_type", "auto")).strip().lower()
+    if proxy_type not in TRANSPARENT_PROXY_TYPES:
+        raise ValueError(
+            "Field 'transparent_proxy.proxy_type' must be one of: auto, socks5, http-connect"
+        )
+    transparent_proxy["proxy_type"] = proxy_type
+
+    chain_name = str(transparent_proxy.get("chain_name", "")).strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,27}", chain_name):
+        raise ValueError(
+            "Field 'transparent_proxy.chain_name' must start with a letter, contain only A-Z, 0-9, _ and be at most 28 chars"
+        )
+    transparent_proxy["chain_name"] = chain_name
+    transparent_proxy["target_subnets"] = normalize_network_items(
+        transparent_proxy.get("target_subnets", ""),
+        "transparent_proxy.target_subnets",
+    )
+    transparent_proxy["bypass_subnets"] = normalize_network_items(
+        transparent_proxy.get("bypass_subnets", ""),
+        "transparent_proxy.bypass_subnets",
+        allow_empty=True,
+    )
 
     resources = merged.get("resources", {})
     links = resources.get("links", [])
@@ -391,6 +505,7 @@ def generate_script(config: dict[str, Any]) -> dict[str, Any]:
         "script_path": str(script_path),
         "generated_at": utc_now(),
         "size": script_path.stat().st_size,
+        "transparent_proxy": generate_transparent_proxy_artifacts(config),
     }
 
     with STATE_LOCK:
@@ -487,7 +602,18 @@ def ensure_runtime_dirs(config: dict[str, Any]) -> None:
     try:
         Path(config["logging"]["debug_log_file"]).parent.mkdir(parents=True, exist_ok=True)
     except OSError:
-        return
+        pass
+
+    for key in (
+        "redsocks_pid_file",
+        "redsocks_config_path",
+        "rules_script_path",
+        "stop_script_path",
+    ):
+        try:
+            resolve_local_path(config["transparent_proxy"][key]).parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
 
 
 def get_automation_status(config: dict[str, Any]) -> dict[str, Any]:
@@ -661,6 +787,467 @@ def write_last_good_location(config: dict[str, Any], location: str | None) -> No
         return
 
 
+def write_text_file(path: Path, content: str, *, executable: bool = False) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8", newline="\n")
+    if executable:
+        try:
+            path.chmod(path.stat().st_mode | 0o111)
+        except OSError:
+            pass
+
+
+def run_managed_command(
+    config: dict[str, Any],
+    command: list[str],
+    *,
+    timeout: int = 30,
+    event: str,
+) -> dict[str, Any]:
+    append_debug_log(config, f"{event}.started", command=command, timeout=timeout)
+    if not command or not command_exists(command[0]):
+        result = {
+            "success": False,
+            "message": f"Команда '{command[0] if command else ''}' не найдена.",
+            "executed_at": utc_now(),
+            "stdout": "",
+            "stderr": "",
+            "returncode": None,
+            "command": command,
+        }
+        append_debug_log(config, f"{event}.missing", result=result)
+        return result
+
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(BASE_DIR),
+            env=build_command_env(),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        result = {
+            "success": completed.returncode == 0,
+            "message": "Команда выполнена." if completed.returncode == 0 else "Команда завершилась с ошибкой.",
+            "executed_at": utc_now(),
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "returncode": completed.returncode,
+            "command": command,
+        }
+        append_debug_log(config, f"{event}.completed", result=result)
+        return result
+    except subprocess.TimeoutExpired as exc:
+        result = {
+            "success": False,
+            "message": "Команда превысила таймаут.",
+            "executed_at": utc_now(),
+            "stdout": exc.stdout or "",
+            "stderr": exc.stderr or "",
+            "returncode": None,
+            "command": command,
+        }
+        append_debug_log(config, f"{event}.timeout", result=result)
+        return result
+
+
+def parse_listener_endpoint(listener: str | None) -> dict[str, Any] | None:
+    text = strip_ansi(listener or "").strip()
+    if not text:
+        return None
+
+    match = re.search(
+        r"(?:(?P<scheme>[a-z][a-z0-9+.-]*)://)?(?P<host>\[[^\]]+\]|[^:\s]+):(?P<port>\d+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    host = match.group("host").strip()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    return {
+        "scheme": (match.group("scheme") or "").lower() or None,
+        "host": host,
+        "port": int(match.group("port")),
+    }
+
+
+def infer_transparent_proxy_type(config: dict[str, Any], vpn_status: dict[str, Any] | None = None) -> str:
+    configured = str(config["transparent_proxy"].get("proxy_type", "auto")).strip().lower()
+    if configured in {"socks5", "http-connect"}:
+        return configured
+
+    lowered_mode = str((vpn_status or {}).get("mode") or "").strip().lower()
+    if "http" in lowered_mode:
+        return "http-connect"
+    return "socks5"
+
+
+def resolve_transparent_proxy_upstream(
+    config: dict[str, Any],
+    vpn_status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    transparent_proxy = config["transparent_proxy"]
+    endpoint = parse_listener_endpoint((vpn_status or {}).get("listener"))
+    host = transparent_proxy["proxy_host"]
+    port = int(transparent_proxy["proxy_port"])
+    source = "config"
+    if endpoint:
+        host = endpoint["host"]
+        port = endpoint["port"]
+        source = "vpn_status.listener"
+
+    if not host or port <= 0:
+        raise ValueError("Не удалось определить upstream-прокси для transparent proxy.")
+
+    return {
+        "host": host,
+        "port": port,
+        "type": infer_transparent_proxy_type(config, vpn_status),
+        "source": source,
+        "listener": (vpn_status or {}).get("listener"),
+        "mode": (vpn_status or {}).get("mode"),
+    }
+
+
+def render_redsocks_config(config: dict[str, Any], upstream: dict[str, Any]) -> str:
+    transparent_proxy = config["transparent_proxy"]
+    return "\n".join(
+        [
+            "base {",
+            "  log_debug = off;",
+            "  log_info = on;",
+            "  daemon = on;",
+            "  redirector = iptables;",
+            "}",
+            "",
+            "redsocks {",
+            f"  local_ip = {transparent_proxy['listen_ip']};",
+            f"  local_port = {int(transparent_proxy['listen_port'])};",
+            f"  ip = {upstream['host']};",
+            f"  port = {int(upstream['port'])};",
+            f"  type = {upstream['type']};",
+            "}",
+            "",
+        ]
+    )
+
+
+def render_transparent_proxy_apply_script(config: dict[str, Any]) -> str:
+    transparent_proxy = config["transparent_proxy"]
+    bypass_subnets = parse_csv_items(transparent_proxy["bypass_subnets"])
+    target_subnets = parse_csv_items(transparent_proxy["target_subnets"])
+    return "\n".join(
+        [
+            "#!/opt/bin/sh",
+            "",
+            "set -eu",
+            "",
+            f'IPTABLES={shlex.quote(transparent_proxy["iptables_path"])}',
+            f'REDSOCKS_BIN={shlex.quote(transparent_proxy["redsocks_bin"])}',
+            f'REDSOCKS_CONF={shlex.quote(str(resolve_local_path(transparent_proxy["redsocks_config_path"])))}',
+            f'REDSOCKS_PID_FILE={shlex.quote(str(resolve_local_path(transparent_proxy["redsocks_pid_file"])))}',
+            f'CHAIN={shlex.quote(transparent_proxy["chain_name"])}',
+            f'LISTEN_PORT={int(transparent_proxy["listen_port"])}',
+            "",
+            'stop_redsocks() {',
+            '  if [ ! -f "$REDSOCKS_PID_FILE" ]; then',
+            "    return 0",
+            "  fi",
+            '  PID="$(cat "$REDSOCKS_PID_FILE" 2>/dev/null || true)"',
+            '  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then',
+            '    kill "$PID" 2>/dev/null || true',
+            "    COUNT=0",
+            '    while [ "$COUNT" -lt 10 ] && kill -0 "$PID" 2>/dev/null; do',
+            "      sleep 1",
+            "      COUNT=$((COUNT + 1))",
+            "    done",
+            '    if kill -0 "$PID" 2>/dev/null; then',
+            '      kill -9 "$PID" 2>/dev/null || true',
+            "    fi",
+            "  fi",
+            '  rm -f "$REDSOCKS_PID_FILE"',
+            "}",
+            "",
+            'stop_redsocks',
+            '"$REDSOCKS_BIN" -c "$REDSOCKS_CONF" -p "$REDSOCKS_PID_FILE"',
+            "sleep 1",
+            'if [ ! -f "$REDSOCKS_PID_FILE" ]; then',
+            '  echo "redsocks did not create pid file" >&2',
+            "  exit 1",
+            "fi",
+            "",
+            '"$IPTABLES" -t nat -N "$CHAIN" 2>/dev/null || true',
+            '"$IPTABLES" -t nat -F "$CHAIN"',
+            "",
+            *[
+                f'"$IPTABLES" -t nat -A "$CHAIN" -d {shlex.quote(subnet)} -j RETURN'
+                for subnet in bypass_subnets
+            ],
+            *[
+                f'"$IPTABLES" -t nat -A "$CHAIN" -s {shlex.quote(subnet)} -p tcp -j REDIRECT --to-ports "$LISTEN_PORT"'
+                for subnet in target_subnets
+            ],
+            '"$IPTABLES" -t nat -A "$CHAIN" -p tcp -j RETURN',
+            "",
+            'if ! "$IPTABLES" -t nat -C PREROUTING -p tcp -j "$CHAIN" 2>/dev/null; then',
+            '  "$IPTABLES" -t nat -A PREROUTING -p tcp -j "$CHAIN"',
+            "fi",
+            "",
+        ]
+    )
+
+
+def render_transparent_proxy_stop_script(config: dict[str, Any]) -> str:
+    transparent_proxy = config["transparent_proxy"]
+    return "\n".join(
+        [
+            "#!/opt/bin/sh",
+            "",
+            "set -eu",
+            "",
+            f'IPTABLES={shlex.quote(transparent_proxy["iptables_path"])}',
+            f'REDSOCKS_PID_FILE={shlex.quote(str(resolve_local_path(transparent_proxy["redsocks_pid_file"])))}',
+            f'CHAIN={shlex.quote(transparent_proxy["chain_name"])}',
+            "",
+            'while "$IPTABLES" -t nat -C PREROUTING -p tcp -j "$CHAIN" 2>/dev/null; do',
+            '  "$IPTABLES" -t nat -D PREROUTING -p tcp -j "$CHAIN"',
+            "done",
+            "",
+            '"$IPTABLES" -t nat -F "$CHAIN" 2>/dev/null || true',
+            '"$IPTABLES" -t nat -X "$CHAIN" 2>/dev/null || true',
+            "",
+            'if [ -f "$REDSOCKS_PID_FILE" ]; then',
+            '  PID="$(cat "$REDSOCKS_PID_FILE" 2>/dev/null || true)"',
+            '  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then',
+            '    kill "$PID" 2>/dev/null || true',
+            "    COUNT=0",
+            '    while [ "$COUNT" -lt 10 ] && kill -0 "$PID" 2>/dev/null; do',
+            "      sleep 1",
+            "      COUNT=$((COUNT + 1))",
+            "    done",
+            '    if kill -0 "$PID" 2>/dev/null; then',
+            '      kill -9 "$PID" 2>/dev/null || true',
+            "    fi",
+            "  fi",
+            '  rm -f "$REDSOCKS_PID_FILE"',
+            "fi",
+            "",
+        ]
+    )
+
+
+def generate_transparent_proxy_artifacts(
+    config: dict[str, Any],
+    vpn_status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    ensure_runtime_dirs(config)
+    upstream = resolve_transparent_proxy_upstream(config, vpn_status)
+    transparent_proxy = config["transparent_proxy"]
+    redsocks_conf_path = resolve_local_path(transparent_proxy["redsocks_config_path"])
+    rules_script_path = resolve_local_path(transparent_proxy["rules_script_path"])
+    stop_script_path = resolve_local_path(transparent_proxy["stop_script_path"])
+
+    write_text_file(redsocks_conf_path, render_redsocks_config(config, upstream))
+    write_text_file(rules_script_path, render_transparent_proxy_apply_script(config), executable=True)
+    write_text_file(stop_script_path, render_transparent_proxy_stop_script(config), executable=True)
+    payload = {
+        "generated_at": utc_now(),
+        "upstream": upstream,
+        "redsocks_config": str(redsocks_conf_path),
+        "apply_script": str(rules_script_path),
+        "stop_script": str(stop_script_path),
+    }
+    append_debug_log(config, "transparent_proxy.artifacts.generated", payload=payload)
+    return payload
+
+
+def transparent_proxy_rule_installed(config: dict[str, Any]) -> bool:
+    transparent_proxy = config["transparent_proxy"]
+    command = [
+        transparent_proxy["iptables_path"],
+        "-t",
+        "nat",
+        "-C",
+        "PREROUTING",
+        "-p",
+        "tcp",
+        "-j",
+        transparent_proxy["chain_name"],
+    ]
+    if not command_exists(command[0]):
+        return False
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(BASE_DIR),
+            env=build_command_env(),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
+def get_transparent_proxy_status(
+    config: dict[str, Any],
+    vpn_status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    transparent_proxy = config["transparent_proxy"]
+    pid_path = resolve_local_path(transparent_proxy["redsocks_pid_file"])
+    config_path = resolve_local_path(transparent_proxy["redsocks_config_path"])
+    apply_script = resolve_local_path(transparent_proxy["rules_script_path"])
+    stop_script = resolve_local_path(transparent_proxy["stop_script_path"])
+
+    pid: int | None = None
+    running = False
+    if pid_path.exists():
+        try:
+            pid = int(pid_path.read_text(encoding="utf-8", errors="replace").strip())
+            running = process_is_running(pid)
+        except (OSError, ValueError):
+            pid = None
+            running = False
+
+    upstream: dict[str, Any] | None = None
+    upstream_error: str | None = None
+    try:
+        upstream = resolve_transparent_proxy_upstream(config, vpn_status)
+    except ValueError as exc:
+        upstream_error = str(exc)
+
+    status = {
+        "mode": transparent_proxy["mode"],
+        "enabled": bool(transparent_proxy["enabled"]),
+        "available": command_exists(transparent_proxy["redsocks_bin"]) and command_exists(transparent_proxy["iptables_path"]),
+        "running": running,
+        "pid": pid,
+        "listener": f"{transparent_proxy['listen_ip']}:{transparent_proxy['listen_port']}",
+        "chain_name": transparent_proxy["chain_name"],
+        "target_subnets": parse_csv_items(transparent_proxy["target_subnets"]),
+        "bypass_subnets": parse_csv_items(transparent_proxy["bypass_subnets"]),
+        "rules_installed": transparent_proxy_rule_installed(config),
+        "redsocks_config_path": str(config_path),
+        "redsocks_config_exists": config_path.exists(),
+        "apply_script_path": str(apply_script),
+        "apply_script_exists": apply_script.exists(),
+        "stop_script_path": str(stop_script),
+        "stop_script_exists": stop_script.exists(),
+        "upstream": upstream,
+        "upstream_error": upstream_error,
+        "vpn_connected": bool((vpn_status or {}).get("connected")),
+        "vpn_listener": (vpn_status or {}).get("listener"),
+        "vpn_mode": (vpn_status or {}).get("mode"),
+    }
+    with STATE_LOCK:
+        STATE["last_transparent_proxy_status"] = status
+    return status
+
+
+def remember_transparent_proxy_action(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    with STATE_LOCK:
+        STATE["last_transparent_proxy_action"] = payload
+        STATE["last_transparent_proxy_status"] = payload.get("status")
+    append_debug_log(config, "transparent_proxy.action.recorded", payload=payload)
+    return payload
+
+
+def stop_transparent_proxy(config: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    pid_path = resolve_local_path(config["transparent_proxy"]["redsocks_pid_file"])
+    if not command_exists(config["transparent_proxy"]["iptables_path"]) and not pid_path.exists():
+        status = get_transparent_proxy_status(config)
+        payload = {
+            "success": True,
+            "message": "Transparent proxy уже выключен.",
+            "executed_at": utc_now(),
+            "stdout": "",
+            "stderr": "",
+            "returncode": 0,
+            "command": [],
+            "reason": reason,
+            "artifacts": None,
+            "status": status,
+        }
+        return remember_transparent_proxy_action(config, payload)
+
+    artifacts = generate_transparent_proxy_artifacts(config)
+    result = run_managed_command(
+        config,
+        [artifacts["stop_script"]],
+        timeout=30,
+        event="transparent_proxy.stop",
+    )
+    status = get_transparent_proxy_status(config)
+    payload = {
+        **result,
+        "reason": reason,
+        "artifacts": artifacts,
+        "status": status,
+        "message": (
+            "Transparent proxy остановлен."
+            if result.get("success")
+            else result.get("message", "Не удалось остановить transparent proxy.")
+        ),
+    }
+    return remember_transparent_proxy_action(config, payload)
+
+
+def sync_transparent_proxy(
+    config: dict[str, Any],
+    *,
+    vpn_status: dict[str, Any] | None = None,
+    reason: str,
+) -> dict[str, Any]:
+    status = vpn_status or get_adguardvpn_status(config, persist_last_good=False)
+    if not config["transparent_proxy"]["enabled"]:
+        return stop_transparent_proxy(config, reason=f"{reason}:disabled")
+    if not status.get("connected"):
+        payload = stop_transparent_proxy(config, reason=f"{reason}:vpn-disconnected")
+        payload["message"] = "VPN не подключён, transparent proxy снят."
+        return remember_transparent_proxy_action(config, payload)
+
+    artifacts = generate_transparent_proxy_artifacts(config, status)
+    result = run_managed_command(
+        config,
+        [artifacts["apply_script"]],
+        timeout=40,
+        event="transparent_proxy.sync",
+    )
+    proxy_status = get_transparent_proxy_status(config, status)
+    payload = {
+        **result,
+        "reason": reason,
+        "artifacts": artifacts,
+        "vpn_status": status,
+        "status": proxy_status,
+        "message": (
+            "Transparent proxy синхронизирован."
+            if result.get("success")
+            else result.get("message", "Не удалось синхронизировать transparent proxy.")
+        ),
+    }
+    return remember_transparent_proxy_action(config, payload)
+
+
+def reconcile_transparent_proxy(
+    config: dict[str, Any],
+    *,
+    vpn_status: dict[str, Any] | None = None,
+    reason: str,
+) -> dict[str, Any]:
+    status = vpn_status or get_adguardvpn_status(config, persist_last_good=False)
+    if config["transparent_proxy"]["enabled"] and status.get("connected"):
+        return sync_transparent_proxy(config, vpn_status=status, reason=reason)
+    return stop_transparent_proxy(config, reason=reason)
+
+
 def execute_http_check(config: dict[str, Any], *, log_failures: bool = False) -> dict[str, Any]:
     vpn = config["vpn"]
     attempts: list[dict[str, Any]] = []
@@ -818,9 +1405,9 @@ def try_rotation_location(
         message = f"Trying location: {location}"
         append_rotation_log(config, message)
         output_lines.append(message)
-        step["disconnect"] = run_adguardvpn_cli(config, ["disconnect"])
+        step["disconnect"] = disconnect_adguardvpn(config)
         time.sleep(3)
-        step["connect"] = run_adguardvpn_cli(config, ["connect", "-l", location])
+        step["connect"] = connect_adguardvpn(config, location)
         step["switched"] = True
         time.sleep(config["vpn"]["switch_delay"])
     append_debug_log(config, "rotation.location.status_before_check", step=step)
@@ -855,10 +1442,10 @@ def try_rotation_quick_connect(config: dict[str, Any], output_lines: list[str]) 
     output_lines.append("Fallback: trying quick connect")
     step: dict[str, Any] = {
         "location": None,
-        "disconnect": run_adguardvpn_cli(config, ["disconnect"]),
+        "disconnect": disconnect_adguardvpn(config),
     }
     time.sleep(3)
-    step["connect"] = run_adguardvpn_cli(config, ["connect"])
+    step["connect"] = connect_adguardvpn(config)
     time.sleep(config["vpn"]["switch_delay"])
     append_debug_log(config, "rotation.quick_connect.command_result", step=step)
 
@@ -1510,10 +2097,12 @@ def connect_adguardvpn(config: dict[str, Any], location: str | None = None) -> d
     status = get_adguardvpn_status(config)
     if status.get("connected") and status.get("location"):
         write_last_good_location(config, status["location"])
+    transparent_proxy = reconcile_transparent_proxy(config, vpn_status=status, reason="connect")
     payload = {
         **result,
         "location": location,
         "status": status,
+        "transparent_proxy": transparent_proxy,
     }
     with STATE_LOCK:
         STATE["last_cli_action"] = payload
@@ -1522,9 +2111,12 @@ def connect_adguardvpn(config: dict[str, Any], location: str | None = None) -> d
 
 def disconnect_adguardvpn(config: dict[str, Any]) -> dict[str, Any]:
     result = run_adguardvpn_cli(config, ["disconnect"])
+    status = get_adguardvpn_status(config)
+    transparent_proxy = reconcile_transparent_proxy(config, vpn_status=status, reason="disconnect")
     payload = {
         **result,
-        "status": get_adguardvpn_status(config),
+        "status": status,
+        "transparent_proxy": transparent_proxy,
     }
     with STATE_LOCK:
         STATE["last_cli_action"] = payload
@@ -2048,6 +2640,11 @@ def collect_state(config: dict[str, Any]) -> dict[str, Any]:
         last_status = snapshot.get("last_vpn_status") or {}
         last_good_location = last_status.get("location")
 
+    transparent_proxy_status = get_transparent_proxy_status(
+        config,
+        snapshot.get("last_vpn_status"),
+    )
+
     return {
         "config_path": str(CONFIG_PATH),
         "panel_url": f"http://{get_panel_access_host(config)}:{config['panel']['port']}",
@@ -2076,6 +2673,7 @@ def collect_state(config: dict[str, Any]) -> dict[str, Any]:
             "debug_max_bytes": config["logging"]["debug_max_bytes"],
             "debug_backup_count": config["logging"]["debug_backup_count"],
         },
+        "transparent_proxy": transparent_proxy_status,
         "automation": get_automation_status(config),
         "resource_count": len(config.get("resources", {}).get("links", [])),
         "last_good_location": last_good_location,
@@ -2085,6 +2683,7 @@ def collect_state(config: dict[str, Any]) -> dict[str, Any]:
         "last_script_generation": snapshot.get("last_script_generation"),
         "last_cli_action": snapshot.get("last_cli_action"),
         "last_vpn_status": snapshot.get("last_vpn_status"),
+        "last_transparent_proxy_action": snapshot.get("last_transparent_proxy_action"),
         "last_autostart_action": snapshot.get("last_autostart_action"),
         "last_update_action": snapshot.get("last_update_action"),
     }
@@ -2117,6 +2716,10 @@ class PanelHandler(BaseHTTPRequestHandler):
                 return self.send_json(get_adguardvpn_status(load_config()))
             if self.path == "/api/adguardvpn/locations":
                 return self.send_json(get_adguardvpn_locations(load_config()))
+            if self.path == "/api/transparent-proxy/status":
+                config = load_config()
+                vpn_status = get_adguardvpn_status(config, persist_last_good=False)
+                return self.send_json(get_transparent_proxy_status(config, vpn_status))
             if self.path == "/api/automation/status":
                 return self.send_json(get_automation_status(load_config()))
             if self.path == "/api/autostart/status":
@@ -2170,7 +2773,9 @@ class PanelHandler(BaseHTTPRequestHandler):
                 write_config(config)
                 notify_automation_config_changed()
                 generation = generate_script(config)
-                return self.send_json({"config": config, "generation": generation})
+                vpn_status = get_adguardvpn_status(config, persist_last_good=False)
+                transparent_proxy = reconcile_transparent_proxy(config, vpn_status=vpn_status, reason="config-save")
+                return self.send_json({"config": config, "generation": generation, "transparent_proxy": transparent_proxy})
             if self.path == "/api/actions/generate-script":
                 return self.send_json(generate_script(load_config()))
             if self.path == "/api/actions/check":
@@ -2191,6 +2796,12 @@ class PanelHandler(BaseHTTPRequestHandler):
                 return self.send_json(connect_adguardvpn(load_config(), location))
             if self.path == "/api/adguardvpn/disconnect":
                 return self.send_json(disconnect_adguardvpn(load_config()))
+            if self.path == "/api/transparent-proxy/sync":
+                config = load_config()
+                vpn_status = get_adguardvpn_status(config, persist_last_good=False)
+                return self.send_json(sync_transparent_proxy(config, vpn_status=vpn_status, reason="api"))
+            if self.path == "/api/transparent-proxy/stop":
+                return self.send_json(stop_transparent_proxy(load_config(), reason="api"))
             if self.path == "/api/autostart/apply":
                 start_now = bool(body.get("start_now", False))
                 return self.send_json(apply_autostart(load_config(), start_now=start_now))
@@ -2255,8 +2866,22 @@ def main() -> None:
         result = run_rotation(config, trigger="cli")
         print(json.dumps(result, ensure_ascii=False, indent=2))
         raise SystemExit(0 if result.get("success") else 1)
+    if len(sys.argv) > 1 and sys.argv[1] == "sync-transparent-proxy":
+        vpn_status = get_adguardvpn_status(config, persist_last_good=False)
+        result = sync_transparent_proxy(config, vpn_status=vpn_status, reason="cli")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        raise SystemExit(0 if result.get("success") else 1)
+    if len(sys.argv) > 1 and sys.argv[1] == "stop-transparent-proxy":
+        result = stop_transparent_proxy(config, reason="cli")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        raise SystemExit(0 if result.get("success") else 1)
 
     generate_script(config)
+    try:
+        startup_status = get_adguardvpn_status(config, persist_last_good=False)
+        reconcile_transparent_proxy(config, vpn_status=startup_status, reason="startup")
+    except Exception as exc:  # noqa: BLE001
+        append_debug_log(config, "transparent_proxy.startup.failed", error=str(exc))
     host = config["panel"]["host"]
     port = config["panel"]["port"]
     server = ReusableThreadingHTTPServer((host, port), PanelHandler)

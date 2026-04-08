@@ -10,6 +10,7 @@
 - вручную запускать ротацию локаций AdGuard VPN
 - автоматически проверять ресурс по расписанию и запускать ротацию при недоступности
 - напрямую управлять `adguardvpn-cli` из веб-интерфейса
+- поднимать автономный transparent proxy через `redsocks` и `iptables` без привязки к веб-панели Keenetic
 - показывать текущую локацию, последние действия и состояние панели
 - хранить основной лог и отдельный debug-лог
 - генерировать совместимый shell-wrapper для cron, init.d и ручного запуска
@@ -22,6 +23,13 @@
 
 - Python backend в [vpn_panel_server.py](/c:/files/keenetic/vpn/vpn_panel_server.py) выполняет проверки, ротацию, работу с `adguardvpn-cli`, автопроверку, обновление и API
 - веб-интерфейс в папке [web](/c:/files/keenetic/vpn/web) показывает состояние и даёт кнопки для управления
+
+Если выбран режим `transparent_proxy.mode = "transparent-redsocks"`, backend дополнительно:
+
+- генерирует `redsocks.conf` и shell-скрипты применения и снятия правил
+- поднимает `redsocks` поверх listener-а `adguardvpn-cli`
+- вешает `iptables`-правила в `nat/PREROUTING` для выбранных LAN-подсетей
+- синхронизирует этот слой при `connect`, `disconnect`, `rotate`, сохранении конфига и старте сервиса
 
 Дополнительно проект генерирует shell-wrapper [generated/adguardvpn-rotate.sh](/c:/files/keenetic/vpn/generated/adguardvpn-rotate.sh), который можно использовать в старых сценариях, cron или init.d.
 
@@ -46,6 +54,8 @@
 
 - `python3`
 - `adguardvpn-cli`
+- `redsocks`
+- `iptables`
 - `ca-certificates`
 - файловая структура Entware с путями `/opt/...`
 
@@ -96,6 +106,8 @@ http://127.0.0.1:8088
 - устанавливает автозапуск панели
 - запускает сервис
 
+При установке через Entware дополнительно ставится пакет `redsocks`.
+
 После установки может понадобиться вход в аккаунт AdGuard VPN:
 
 ```sh
@@ -142,6 +154,7 @@ cd /opt/share/keenetic-vpn-panel
 - включать и выключать автоматический режим
 - задавать интервал автопроверки
 - настраивать `adguardvpn-cli`
+- включать автономный `transparent proxy` через `redsocks`
 - применять и удалять автозапуск панели как сервиса
 - включать debug-лог
 
@@ -179,13 +192,24 @@ cd /opt/share/keenetic-vpn-panel
 
 ### 3. Включить автоматический режим
 
-В настройках включите:
+В настройках выберите:
 
 - `automation.enabled`
 - задайте `automation.check_interval`
 
 После этого запущенная панель будет сама выполнять проверки через заданный интервал.
 Если ресурс недоступен, она автоматически запустит ротацию.
+
+### 4. Включить автономный transparent proxy
+
+В настройках включите:
+
+- `transparent_proxy.mode = "transparent-redsocks"`
+- задайте LAN-подсети в `transparent_proxy.target_subnets`
+- при необходимости скорректируйте `transparent_proxy.listen_port`
+
+После этого панель будет поднимать `redsocks` и применять `iptables`-правила сама.
+Этот режим работает без ручной настройки маршрутов через веб-панель Keenetic и подходит для других роутеров, где доступны `adguardvpn-cli`, `redsocks` и `iptables`.
 
 ## Ключевые разделы конфига
 
@@ -231,6 +255,33 @@ cd /opt/share/keenetic-vpn-panel
 - `enabled` — включает фоновую автопроверку
 - `check_interval` — интервал между проверками в секундах
 
+### `transparent_proxy`
+
+Настройки автономного прозрачного TCP-проксирования:
+
+- `enabled`
+- `mode`
+- `proxy_type`
+- `proxy_host`
+- `proxy_port`
+- `listen_ip`
+- `listen_port`
+- `redsocks_bin`
+- `redsocks_pid_file`
+- `redsocks_config_path`
+- `iptables_path`
+- `chain_name`
+- `target_subnets`
+- `bypass_subnets`
+- `rules_script_path`
+- `stop_script_path`
+
+Важно:
+
+- сейчас transparent proxy покрывает только TCP-трафик
+- UDP и DNS в этот слой не входят
+- `target_subnets` должны содержать LAN-подсети клиентов, чей трафик нужно прозрачно отправлять в VPN
+
 ### `autostart`
 
 Настройки запуска панели как сервиса Entware:
@@ -267,6 +318,7 @@ cd /opt/share/keenetic-vpn-panel
 - старт и завершение ротации
 - HTTP-проверки по попыткам
 - вызовы `adguardvpn-cli`
+- события `transparent_proxy.*`
 - работу lock-файла
 - выбор локаций и fallback-сценарии
 
@@ -338,6 +390,13 @@ tail -n 60 /opt/var/log/keenetic-vpn-panel.log
 
 Этими же настройками можно управлять из веб-панели на странице параметров.
 
+Дополнительные CLI-команды:
+
+```sh
+/opt/bin/python3 vpn_panel_server.py sync-transparent-proxy
+/opt/bin/python3 vpn_panel_server.py stop-transparent-proxy
+```
+
 ## Что важно учитывать
 
 - Не публикуйте панель в интернет без дополнительной защиты.
@@ -364,6 +423,16 @@ tail -n 60 /opt/var/log/keenetic-vpn-panel.log
 - что `automation.enabled = true`
 - что интервал не слишком большой
 - что в логах нет ошибок HTTP-проверки или вызова CLI
+
+### Transparent proxy включён, но клиенты не идут через VPN
+
+Проверьте:
+
+- установлен ли `redsocks`
+- существует ли `iptables`
+- что `transparent_proxy.target_subnets` совпадает с реальными LAN-подсетями
+- что `adguardvpn-cli status` показывает рабочий listener
+- что в debug-логе нет ошибок `transparent_proxy.sync`
 
 ### Debug-лог не появляется
 

@@ -187,6 +187,92 @@
 
               <section class="form-block">
                 <div class="block-head">
+                  <h4>Transparent proxy через redsocks</h4>
+                  <div class="section-actions">
+                    <button class="ghost small" type="button" id="transparent-proxy-refresh-status">Статус</button>
+                    <button class="ghost small" type="button" id="transparent-proxy-sync">Синхронизировать</button>
+                    <button class="ghost small" type="button" id="transparent-proxy-stop">Остановить</button>
+                  </div>
+                </div>
+                <div class="field-grid">
+                  <label class="full-span">
+                    Режим маршрутизации
+                    <select name="transparent_proxy.mode">
+                      <option value="router-only">Router only</option>
+                      <option value="transparent-redsocks">Transparent proxy через redsocks</option>
+                    </select>
+                  </label>
+                  <label>
+                    Тип upstream proxy
+                    <select name="transparent_proxy.proxy_type">
+                      <option value="auto">Авто</option>
+                      <option value="socks5">SOCKS5</option>
+                      <option value="http-connect">HTTP CONNECT</option>
+                    </select>
+                  </label>
+                  <label>
+                    Резервный upstream host
+                    <input name="transparent_proxy.proxy_host" type="text" required />
+                  </label>
+                  <label>
+                    Резервный upstream port
+                    <input name="transparent_proxy.proxy_port" type="number" min="1" required />
+                  </label>
+                  <label>
+                    redsocks listen IP
+                    <input name="transparent_proxy.listen_ip" type="text" required />
+                  </label>
+                  <label>
+                    redsocks listen port
+                    <input name="transparent_proxy.listen_port" type="number" min="1" required />
+                  </label>
+                  <label>
+                    Команда redsocks
+                    <input name="transparent_proxy.redsocks_bin" type="text" required />
+                  </label>
+                  <label>
+                    Команда iptables
+                    <input name="transparent_proxy.iptables_path" type="text" required />
+                  </label>
+                  <label>
+                    NAT chain name
+                    <input name="transparent_proxy.chain_name" type="text" required />
+                  </label>
+                  <label class="full-span">
+                    PID-файл redsocks
+                    <input name="transparent_proxy.redsocks_pid_file" type="text" required />
+                  </label>
+                  <label class="full-span">
+                    Путь к redsocks.conf
+                    <input name="transparent_proxy.redsocks_config_path" type="text" required />
+                  </label>
+                  <label class="full-span">
+                    Целевые подсети LAN
+                    <textarea name="transparent_proxy.target_subnets" rows="3" required></textarea>
+                  </label>
+                  <label class="full-span">
+                    Подсети исключения
+                    <textarea name="transparent_proxy.bypass_subnets" rows="4" required></textarea>
+                  </label>
+                  <label class="full-span">
+                    Скрипт применения правил
+                    <input name="transparent_proxy.rules_script_path" type="text" required />
+                  </label>
+                  <label class="full-span">
+                    Скрипт снятия правил
+                    <input name="transparent_proxy.stop_script_path" type="text" required />
+                  </label>
+                  <div class="hint-card full-span">
+                    Этот режим прозрачно перенаправляет TCP-трафик из выбранных LAN-подсетей в local
+                    redsocks, а тот уже отправляет соединения в listener adguardvpn-cli. Для UDP/DNS
+                    нужен отдельный слой.
+                  </div>
+                </div>
+                <pre id="transparent-proxy-output" class="console compact-console">Transparent proxy ещё не загружен.</pre>
+              </section>
+
+              <section class="form-block">
+                <div class="block-head">
                   <h4>Автозапуск на Keenetic / Entware</h4>
                   <div class="section-actions">
                     <button class="ghost small" type="button" id="project-update">Обновить с GitHub</button>

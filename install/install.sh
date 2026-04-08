@@ -114,6 +114,7 @@ install_pkg_if_missing ca-certificates
 install_pkg_if_missing curl
 install_pkg_if_missing sudo
 install_pkg_if_missing python3
+install_pkg_if_missing redsocks
 if ! need_cmd curl && ! need_cmd wget; then
   install_pkg_if_missing wget-ssl
 fi

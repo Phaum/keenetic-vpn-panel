@@ -9,6 +9,7 @@ const resourceEditor = document.querySelector("#resource-editor");
 const vpnOutput = document.querySelector("#vpn-output");
 const vpnLocationSelect = document.querySelector("#vpn-location-select");
 const autostartOutput = document.querySelector("#autostart-output");
+const transparentProxyOutput = document.querySelector("#transparent-proxy-output");
 
 const fields = [
   "automation.enabled",
@@ -37,6 +38,21 @@ const fields = [
   "autostart.pid_file",
   "autostart.start_script_path",
   "autostart.init_script_path",
+  "transparent_proxy.mode",
+  "transparent_proxy.proxy_type",
+  "transparent_proxy.proxy_host",
+  "transparent_proxy.proxy_port",
+  "transparent_proxy.listen_ip",
+  "transparent_proxy.listen_port",
+  "transparent_proxy.redsocks_bin",
+  "transparent_proxy.redsocks_pid_file",
+  "transparent_proxy.redsocks_config_path",
+  "transparent_proxy.iptables_path",
+  "transparent_proxy.chain_name",
+  "transparent_proxy.target_subnets",
+  "transparent_proxy.bypass_subnets",
+  "transparent_proxy.rules_script_path",
+  "transparent_proxy.stop_script_path",
   "paths.lock_file",
   "paths.log_file",
   "paths.good_file",
@@ -70,6 +86,10 @@ function setVpnMessage(message) {
 
 function setAutostartMessage(message) {
   setConsole(autostartOutput, message);
+}
+
+function setTransparentProxyMessage(message) {
+  setConsole(transparentProxyOutput, message);
 }
 
 function setText(id, value) {
@@ -297,6 +317,7 @@ function buildConfigFromForm() {
     adguardvpn: {},
     automation: {},
     autostart: {},
+    transparent_proxy: {},
     paths: {},
     logging: {},
     resources: { links: [] },
@@ -360,6 +381,7 @@ async function loadConfig() {
 async function loadState() {
   const state = await fetchJson("/api/state");
   const automation = state.automation || {};
+  const transparentProxy = state.transparent_proxy || {};
 
   setText("source-script", formatExists(state.source_script));
   setText("generated-script", formatExists(state.generated_script));
@@ -398,6 +420,14 @@ async function loadState() {
     "autostart-last-action",
     renderSummary(state.last_autostart_action, "Успех", "Нет данных")
   );
+  setText(
+    "transparent-proxy-summary",
+    formatTransparentProxySummary(transparentProxy)
+  );
+  setText(
+    "transparent-proxy-last-action",
+    renderSummary(state.last_transparent_proxy_action, "Успех", "Нет данных")
+  );
   updateAutomationToggle(automation);
 }
 
@@ -435,6 +465,25 @@ function updateAutomationToggle(status) {
     return;
   }
   button.textContent = status?.enabled ? "Выключить авто-режим" : "Включить авто-режим";
+}
+
+function formatTransparentProxySummary(status) {
+  if (!status || status.enabled === undefined) {
+    return "Нет данных";
+  }
+  if (status.mode === "router-only") {
+    return "Router-only";
+  }
+  if (!status.available) {
+    return "Недоступен";
+  }
+  if (status.running && status.rules_installed) {
+    return `Активен • ${status.listener}`;
+  }
+  if (status.vpn_connected) {
+    return "Ожидает синхронизации";
+  }
+  return "VPN не подключён";
 }
 
 function renderVpnStatus(status) {
@@ -493,6 +542,52 @@ async function loadAutostartStatus() {
   return status;
 }
 
+function formatTransparentProxyStatusText(status) {
+  const lines = [];
+  lines.push(`Режим: ${status.mode || (status.enabled ? "transparent-redsocks" : "router-only")}`);
+  lines.push(`Зависимости: ${status.available ? "доступны" : "не найдены"}`);
+  lines.push(`redsocks: ${status.running ? `запущен (PID ${status.pid || "-"})` : "остановлен"}`);
+  lines.push(`Правила iptables: ${status.rules_installed ? "применены" : "не применены"}`);
+  lines.push(`Локальный listener: ${status.listener || "-"}`);
+  lines.push(`Chain: ${status.chain_name || "-"}`);
+  lines.push(`VPN: ${status.vpn_connected ? "подключён" : "не подключён"}`);
+  if (status.vpn_mode) {
+    lines.push(`VPN mode: ${status.vpn_mode}`);
+  }
+  if (status.vpn_listener) {
+    lines.push(`VPN listener: ${status.vpn_listener}`);
+  }
+  if (status.upstream) {
+    lines.push(
+      `Upstream: ${status.upstream.type}://${status.upstream.host}:${status.upstream.port} (${status.upstream.source})`
+    );
+  } else if (status.upstream_error) {
+    lines.push(`Upstream: ${status.upstream_error}`);
+  }
+  if (status.target_subnets?.length) {
+    lines.push(`Target subnets: ${status.target_subnets.join(", ")}`);
+  }
+  if (status.bypass_subnets?.length) {
+    lines.push(`Bypass subnets: ${status.bypass_subnets.join(", ")}`);
+  }
+  lines.push(`redsocks.conf: ${status.redsocks_config_exists ? status.redsocks_config_path : `${status.redsocks_config_path} (не найден)`}`);
+  lines.push(`apply script: ${status.apply_script_exists ? status.apply_script_path : `${status.apply_script_path} (не найден)`}`);
+  lines.push(`stop script: ${status.stop_script_exists ? status.stop_script_path : `${status.stop_script_path} (не найден)`}`);
+  return lines.join("\n");
+}
+
+async function loadTransparentProxyStatus() {
+  if (!transparentProxyOutput && !byId("transparent-proxy-summary")) {
+    return;
+  }
+  const status = await fetchJson("/api/transparent-proxy/status");
+  if (transparentProxyOutput) {
+    setTransparentProxyMessage(formatTransparentProxyStatusText(status));
+  }
+  setText("transparent-proxy-summary", formatTransparentProxySummary(status));
+  return status;
+}
+
 async function toggleAutomationMode() {
   const currentConfig = await fetchJson("/api/config");
   const enabled = !Boolean(currentConfig.automation?.enabled);
@@ -529,7 +624,7 @@ async function runVpnAction(url, payload, successPrefix, failurePrefix) {
     }
   }
   setVpnMessage(summary.filter(Boolean).join("\n"));
-  await Promise.all([loadState(), loadVpnStatus(), loadVpnLocations()]);
+  await Promise.all([loadState(), loadVpnStatus(), loadVpnLocations(), loadTransparentProxyStatus()]);
 }
 
 function formatVpnStatusText(status) {
@@ -602,6 +697,29 @@ async function runAutostartAction(url, payload, successPrefix) {
   await Promise.all([loadState(), loadAutostartStatus()]);
 }
 
+async function runTransparentProxyAction(url, payload, successPrefix) {
+  setTransparentProxyMessage("Выполняется...");
+  const result = await fetchJson(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {}),
+  });
+  const status = result.status || result;
+  const sections = [successPrefix, "", formatTransparentProxyStatusText(status)];
+  if (result.stdout || result.stderr) {
+    sections.push("", "Shell output:");
+    if (result.stdout) {
+      sections.push(result.stdout.trim());
+    }
+    if (result.stderr) {
+      sections.push(result.stderr.trim());
+    }
+  }
+  setTransparentProxyMessage(sections.filter(Boolean).join("\n"));
+  await Promise.all([loadState(), loadTransparentProxyStatus(), loadLogs()]);
+  return result;
+}
+
 async function loadLogs() {
   if (!logsOutput) {
     return;
@@ -645,7 +763,7 @@ async function runAction(url, successPrefix) {
       `${successPrefix}\n\n${JSON.stringify(result, null, 2)}`
     );
   }
-  await Promise.all([loadState(), loadLogs(), loadScript(), loadVpnStatus()]);
+  await Promise.all([loadState(), loadLogs(), loadScript(), loadVpnStatus(), loadTransparentProxyStatus()]);
 }
 
 async function waitForPanelAndReload(delaySeconds = 4) {
@@ -676,7 +794,7 @@ async function runProjectUpdateFlow(setMessage) {
     return result;
   }
 
-  await Promise.all([loadState(), loadLogs(), loadScript(), loadVpnStatus(), loadAutostartStatus()]);
+  await Promise.all([loadState(), loadLogs(), loadScript(), loadVpnStatus(), loadAutostartStatus(), loadTransparentProxyStatus()]);
   return result;
 }
 
@@ -698,7 +816,7 @@ function bindSettingsForm() {
 
     try {
       await saveCurrentConfig();
-      await Promise.all([loadLogs(), loadScript(), loadVpnStatus(), loadAutostartStatus()]);
+      await Promise.all([loadLogs(), loadScript(), loadVpnStatus(), loadAutostartStatus(), loadTransparentProxyStatus()]);
     } catch (error) {
       setStatusMessage(error.message);
     }
@@ -783,7 +901,7 @@ function bindActions() {
 
   bindClick("refresh-state", async () => {
     try {
-      await Promise.all([loadState(), loadVpnStatus()]);
+      await Promise.all([loadState(), loadVpnStatus(), loadTransparentProxyStatus()]);
       setStatusMessage("Состояние обновлено.");
     } catch (error) {
       setStatusMessage(error.message);
@@ -885,6 +1003,40 @@ function bindActions() {
     }
   });
 
+  bindClick("transparent-proxy-refresh-status", async () => {
+    try {
+      await loadTransparentProxyStatus();
+    } catch (error) {
+      setTransparentProxyMessage(error.message);
+    }
+  });
+
+  bindClick("transparent-proxy-sync", async () => {
+    try {
+      await saveCurrentConfig(false);
+      await runTransparentProxyAction(
+        "/api/transparent-proxy/sync",
+        {},
+        "Transparent proxy синхронизирован."
+      );
+    } catch (error) {
+      setTransparentProxyMessage(error.message);
+    }
+  });
+
+  bindClick("transparent-proxy-stop", async () => {
+    try {
+      await saveCurrentConfig(false);
+      await runTransparentProxyAction(
+        "/api/transparent-proxy/stop",
+        {},
+        "Transparent proxy остановлен."
+      );
+    } catch (error) {
+      setTransparentProxyMessage(error.message);
+    }
+  });
+
   bindClick("automation-refresh-status", async () => {
     try {
       await loadState();
@@ -957,6 +1109,7 @@ async function boot() {
       loadVpnStatus(),
       loadVpnLocations(),
       loadAutostartStatus(),
+      loadTransparentProxyStatus(),
     ]);
     if (actionOutput) {
       setStatusMessage("Панель готова к работе.");
@@ -967,6 +1120,10 @@ async function boot() {
     }
     if (autostartOutput && !autostartOutput.textContent.trim()) {
       setAutostartMessage("Панель управления автозапуском готова.");
+    }
+    if (transparentProxyOutput && !transparentProxyOutput.textContent.trim()) {
+      const status = await loadTransparentProxyStatus();
+      setTransparentProxyMessage(formatTransparentProxyStatusText(status));
     }
   } catch (error) {
     setStatusMessage(error.message);
@@ -981,6 +1138,9 @@ async function boot() {
     }
     if (autostartOutput && !autostartOutput.textContent.trim()) {
       setAutostartMessage(error.message);
+    }
+    if (transparentProxyOutput && !transparentProxyOutput.textContent.trim()) {
+      setTransparentProxyMessage(error.message);
     }
   }
 }

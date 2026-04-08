@@ -35,6 +35,24 @@
     "start_script_path": "/opt/share/keenetic-vpn-panel/deploy/entware/start_vpn_panel.sh",
     "init_script_path": "/opt/etc/init.d/S99keenetic-vpn-panel"
   },
+  "transparent_proxy": {
+    "mode": "router-only",
+    "enabled": false,
+    "proxy_type": "auto",
+    "proxy_host": "127.0.0.1",
+    "proxy_port": 1080,
+    "listen_ip": "127.0.0.1",
+    "listen_port": 12345,
+    "redsocks_bin": "redsocks",
+    "redsocks_pid_file": "generated/redsocks.pid",
+    "redsocks_config_path": "generated/redsocks.conf",
+    "iptables_path": "iptables",
+    "chain_name": "KVPN_REDSOCKS",
+    "target_subnets": "192.168.1.0/24",
+    "bypass_subnets": "0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4",
+    "rules_script_path": "generated/apply-transparent-proxy.sh",
+    "stop_script_path": "generated/remove-transparent-proxy.sh"
+  },
   "paths": {
     "lock_file": "/opt/tmp/adguardvpn-switch.lock",
     "log_file": "/opt/var/log/adguardvpn-rotate.log",
