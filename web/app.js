@@ -131,13 +131,39 @@ function formatExists(item) {
   return item.exists ? item.path : `${item.path} (не найден)`;
 }
 
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return "-";
+  }
+
+  const parsed = new Date(value);
+  if (!Number.isNaN(parsed.getTime())) {
+    return [
+      parsed.getFullYear(),
+      pad2(parsed.getMonth() + 1),
+      pad2(parsed.getDate()),
+    ].join("-") + ` ${pad2(parsed.getHours())}:${pad2(parsed.getMinutes())}:${pad2(parsed.getSeconds())}`;
+  }
+
+  return String(value)
+    .replace("T", " ")
+    .replace(/\.\d+/, "")
+    .replace(/[+-]\d\d:\d\d$/, "")
+    .replace(/Z$/, "");
+}
+
 function renderSummary(record, successText, emptyText) {
   if (!record) {
     return emptyText;
   }
 
-  const stamp =
-    record.checked_at || record.executed_at || record.generated_at || "-";
+  const stamp = formatDateTime(
+    record.checked_at || record.executed_at || record.generated_at || "-"
+  );
   const label =
     record.success === undefined ? "OK" : record.success ? successText : "Ошибка";
   const message = record.message || "";
@@ -398,7 +424,9 @@ function formatAutomationNextCheck(status) {
   if (status.loop_running) {
     return "Выполняется сейчас";
   }
-  return status.next_check_at || "Ожидание первого цикла";
+  return status.next_check_at
+    ? formatDateTime(status.next_check_at)
+    : "Ожидание первого цикла";
 }
 
 function updateAutomationToggle(status) {
