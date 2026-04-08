@@ -1790,6 +1790,125 @@ def remove_autostart(config: dict[str, Any], stop_now: bool = True) -> dict[str,
     return payload
 
 
+def build_restart_helper_kwargs() -> dict[str, Any]:
+    if os.name == "nt":
+        creationflags = 0
+        for name in ("CREATE_NEW_PROCESS_GROUP", "DETACHED_PROCESS"):
+            creationflags |= int(getattr(subprocess, name, 0))
+        return {"creationflags": creationflags}
+    return {"start_new_session": True}
+
+
+def schedule_service_restart(config: dict[str, Any], delay_seconds: int) -> dict[str, Any]:
+    init_script = Path(config["autostart"]["init_script_path"])
+    log_file = Path(config["autostart"]["log_file"])
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    helper_code = (
+        "import subprocess, sys, time; "
+        "time.sleep(float(sys.argv[1])); "
+        "log_path=sys.argv[2]; "
+        "command=sys.argv[3:]; "
+        "handle=None; "
+        "stdout=stderr=None; "
+        "try:\n"
+        " handle=open(log_path,'a',encoding='utf-8')\n"
+        " stdout=stderr=handle\n"
+        "except OSError:\n"
+        " handle=None\n"
+        "kwargs={}; "
+        "kwargs['start_new_session']=True if sys.platform != 'win32' else False; "
+        "if sys.platform == 'win32':\n"
+        " kwargs['creationflags']=getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0)|getattr(subprocess,'DETACHED_PROCESS',0)\n"
+        "subprocess.Popen(command, stdout=stdout, stderr=stderr, **kwargs)"
+    )
+    helper_command = [
+        sys.executable,
+        "-c",
+        helper_code,
+        str(delay_seconds),
+        str(log_file),
+        str(init_script),
+        "restart",
+    ]
+    subprocess.Popen(helper_command, cwd=str(BASE_DIR), **build_restart_helper_kwargs())
+    return {
+        "scheduled": True,
+        "method": "init-script",
+        "delay_seconds": delay_seconds,
+        "command": [str(init_script), "restart"],
+    }
+
+
+def schedule_process_restart(config: dict[str, Any], delay_seconds: int) -> dict[str, Any]:
+    log_file = Path(config["autostart"]["log_file"])
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    script_path = str((BASE_DIR / "vpn_panel_server.py").resolve())
+    restart_command = [sys.executable, script_path]
+    helper_code = (
+        "import os, signal, subprocess, sys, time; "
+        "delay=float(sys.argv[1]); "
+        "pid=int(sys.argv[2]); "
+        "cwd=sys.argv[3]; "
+        "log_path=sys.argv[4]; "
+        "command=sys.argv[5:]; "
+        "time.sleep(delay); "
+        "try:\n"
+        " os.kill(pid, getattr(signal,'SIGTERM',15))\n"
+        "except OSError:\n"
+        " pass\n"
+        "time.sleep(1.0); "
+        "handle=None; "
+        "stdout=stderr=None; "
+        "try:\n"
+        " handle=open(log_path,'a',encoding='utf-8')\n"
+        " stdout=stderr=handle\n"
+        "except OSError:\n"
+        " handle=None\n"
+        "kwargs={'cwd': cwd}; "
+        "kwargs['start_new_session']=True if sys.platform != 'win32' else False; "
+        "if sys.platform == 'win32':\n"
+        " kwargs['creationflags']=getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0)|getattr(subprocess,'DETACHED_PROCESS',0)\n"
+        "subprocess.Popen(command, stdout=stdout, stderr=stderr, **kwargs)"
+    )
+    helper_command = [
+        sys.executable,
+        "-c",
+        helper_code,
+        str(delay_seconds),
+        str(os.getpid()),
+        str(BASE_DIR),
+        str(log_file),
+        *restart_command,
+    ]
+    subprocess.Popen(helper_command, cwd=str(BASE_DIR), **build_restart_helper_kwargs())
+    return {
+        "scheduled": True,
+        "method": "process-reexec",
+        "delay_seconds": delay_seconds,
+        "command": restart_command,
+    }
+
+
+def schedule_panel_restart_after_update(config: dict[str, Any], delay_seconds: int = 2) -> dict[str, Any]:
+    autostart_status = get_autostart_status(config)
+    init_script = Path(config["autostart"]["init_script_path"])
+    if (
+        init_script.exists()
+        and autostart_status.get("running")
+        and autostart_status.get("pid") == os.getpid()
+    ):
+        return schedule_service_restart(config, delay_seconds)
+    return schedule_process_restart(config, delay_seconds)
+
+
 def run_project_update(config: dict[str, Any]) -> dict[str, Any]:
     with ACTION_LOCK:
         update_script = (BASE_DIR / "install" / "update.sh").resolve()
@@ -1804,6 +1923,7 @@ def run_project_update(config: dict[str, Any]) -> dict[str, Any]:
                 "stderr": "",
                 "returncode": None,
                 "command": command,
+                "restart_scheduled": False,
             }
             with STATE_LOCK:
                 STATE["last_update_action"] = result
@@ -1833,7 +1953,24 @@ def run_project_update(config: dict[str, Any]) -> dict[str, Any]:
                 "stderr": completed.stderr,
                 "returncode": completed.returncode,
                 "command": command,
+                "restart_scheduled": False,
             }
+            if result["success"]:
+                try:
+                    restart_info = schedule_panel_restart_after_update(config)
+                    result["restart_scheduled"] = bool(restart_info.get("scheduled"))
+                    result["restart_method"] = restart_info.get("method")
+                    result["restart_delay_seconds"] = restart_info.get("delay_seconds")
+                    result["restart_command"] = restart_info.get("command")
+                    if result["restart_scheduled"]:
+                        result["message"] = (
+                            f"Обновление завершено. Перезапуск панели запланирован через "
+                            f"{result['restart_delay_seconds']} сек."
+                        )
+                        append_debug_log(config, "project_update.restart_scheduled", restart=restart_info)
+                except Exception as restart_exc:  # noqa: BLE001
+                    result["restart_error"] = str(restart_exc)
+                    append_debug_log(config, "project_update.restart_failed", error=str(restart_exc))
         except subprocess.TimeoutExpired as exc:
             result = {
                 "success": False,
@@ -1843,6 +1980,7 @@ def run_project_update(config: dict[str, Any]) -> dict[str, Any]:
                 "stderr": exc.stderr or "",
                 "returncode": None,
                 "command": command,
+                "restart_scheduled": False,
             }
 
         with STATE_LOCK:

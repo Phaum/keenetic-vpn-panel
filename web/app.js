@@ -620,6 +620,38 @@ async function runAction(url, successPrefix) {
   await Promise.all([loadState(), loadLogs(), loadScript(), loadVpnStatus()]);
 }
 
+async function waitForPanelAndReload(delaySeconds = 4) {
+  const initialDelay = Math.max(1000, Number(delaySeconds || 4) * 1000);
+  await new Promise((resolve) => window.setTimeout(resolve, initialDelay));
+
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    try {
+      const response = await fetch(`/api/state?_=${Date.now()}`, { cache: "no-store" });
+      if (response.ok) {
+        window.location.reload();
+        return;
+      }
+    } catch {
+      // Панель ещё перезапускается, продолжаем ждать.
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 1500));
+  }
+}
+
+async function runProjectUpdateFlow(setMessage) {
+  setMessage("Запускаю обновление с GitHub...");
+  const result = await fetchJson("/api/actions/update-project", { method: "POST" });
+  setMessage(JSON.stringify(result, null, 2));
+
+  if (result.restart_scheduled) {
+    waitForPanelAndReload((result.restart_delay_seconds || 2) + 2);
+    return result;
+  }
+
+  await Promise.all([loadState(), loadLogs(), loadScript(), loadVpnStatus(), loadAutostartStatus()]);
+  return result;
+}
+
 function bindClick(id, handler) {
   const element = byId(id);
   if (element) {
@@ -706,7 +738,7 @@ function bindActions() {
 
   bindClick("update-project", async () => {
     try {
-      await runAction("/api/actions/update-project", "Обновление с GitHub завершено.");
+      await runProjectUpdateFlow(setStatusMessage);
     } catch (error) {
       setStatusMessage(error.message);
     }
@@ -875,10 +907,7 @@ function bindActions() {
 
   bindClick("project-update", async () => {
     try {
-      setAutostartMessage("Запускаю обновление с GitHub...");
-      const result = await fetchJson("/api/actions/update-project", { method: "POST" });
-      setAutostartMessage(JSON.stringify(result, null, 2));
-      await Promise.all([loadState(), loadLogs(), loadScript(), loadAutostartStatus()]);
+      await runProjectUpdateFlow(setAutostartMessage);
     } catch (error) {
       setAutostartMessage(error.message);
     }
