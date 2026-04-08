@@ -11,6 +11,8 @@ const vpnLocationSelect = document.querySelector("#vpn-location-select");
 const autostartOutput = document.querySelector("#autostart-output");
 
 const fields = [
+  "automation.enabled",
+  "automation.check_interval",
   "vpn.test_url",
   "vpn.expected_text",
   "vpn.top_count",
@@ -267,6 +269,7 @@ function buildConfigFromForm() {
     panel: {},
     vpn: {},
     adguardvpn: {},
+    automation: {},
     autostart: {},
     paths: {},
     logging: {},
@@ -330,6 +333,7 @@ async function loadConfig() {
 
 async function loadState() {
   const state = await fetchJson("/api/state");
+  const automation = state.automation || {};
 
   setText("source-script", formatExists(state.source_script));
   setText("generated-script", formatExists(state.generated_script));
@@ -349,6 +353,12 @@ async function loadState() {
     "last-update-summary",
     renderSummary(state.last_update_action, "Успех", "Нет данных")
   );
+  setText("automation-status-summary", formatAutomationStatus(automation));
+  setText("automation-next-check", formatAutomationNextCheck(automation));
+  setText(
+    "automation-last-action",
+    renderSummary(state.last_automation_action, "Успех", "Нет данных")
+  );
   setText("panel-url", state.panel_url || "-");
   setText("sidebar-panel-url", state.panel_url || "-");
   setText("aside-panel-url", state.panel_url || "-");
@@ -362,6 +372,41 @@ async function loadState() {
     "autostart-last-action",
     renderSummary(state.last_autostart_action, "Успех", "Нет данных")
   );
+  updateAutomationToggle(automation);
+}
+
+function formatAutomationStatus(status) {
+  if (!status || status.enabled === undefined) {
+    return "Нет данных";
+  }
+  if (!status.enabled) {
+    return "Выключен";
+  }
+  if (status.loop_running) {
+    return `Проверка выполняется • ${status.check_interval} сек`;
+  }
+  if (status.last_error) {
+    return `Ошибка • ${status.last_error}`;
+  }
+  return `Включён • ${status.check_interval} сек`;
+}
+
+function formatAutomationNextCheck(status) {
+  if (!status || !status.enabled) {
+    return "Авто-режим выключен";
+  }
+  if (status.loop_running) {
+    return "Выполняется сейчас";
+  }
+  return status.next_check_at || "Ожидание первого цикла";
+}
+
+function updateAutomationToggle(status) {
+  const button = byId("automation-toggle");
+  if (!button) {
+    return;
+  }
+  button.textContent = status?.enabled ? "Выключить авто-режим" : "Включить авто-режим";
 }
 
 function renderVpnStatus(status) {
@@ -418,6 +463,20 @@ async function loadAutostartStatus() {
   const status = await fetchJson("/api/autostart/status");
   setAutostartMessage(JSON.stringify(status, null, 2));
   return status;
+}
+
+async function toggleAutomationMode() {
+  const currentConfig = await fetchJson("/api/config");
+  const enabled = !Boolean(currentConfig.automation?.enabled);
+  const intervalInput = form?.elements?.namedItem("automation.check_interval");
+  const interval = Number(intervalInput?.value || currentConfig.automation?.check_interval) || 600;
+  const result = await fetchJson("/api/automation/update", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled, check_interval: interval }),
+  });
+  await Promise.all([loadConfig(), loadState(), loadLogs()]);
+  return result;
 }
 
 async function runVpnAction(url, payload, successPrefix, failurePrefix) {
@@ -763,6 +822,27 @@ function bindActions() {
       await loadAutostartStatus();
     } catch (error) {
       setAutostartMessage(error.message);
+    }
+  });
+
+  bindClick("automation-refresh-status", async () => {
+    try {
+      await loadState();
+      setStatusMessage("Статус автоматического режима обновлён.");
+    } catch (error) {
+      setStatusMessage(error.message);
+    }
+  });
+
+  bindClick("automation-toggle", async () => {
+    try {
+      setStatusMessage("Обновляю автоматический режим...");
+      const result = await toggleAutomationMode();
+      setStatusMessage(
+        `${result.message}\n\n${JSON.stringify(result.automation, null, 2)}`
+      );
+    } catch (error) {
+      setStatusMessage(error.message);
     }
   });
 

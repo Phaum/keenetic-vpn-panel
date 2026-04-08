@@ -308,6 +308,7 @@ body::before {
 
 .status-card {
   position: relative;
+  overflow: hidden;
 }
 
 .status-card p {
@@ -467,6 +468,15 @@ body::before {
 
 .full-span {
   grid-column: 1 / -1;
+}
+
+.hint-card {
+  padding: 14px 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 14px;
+  background: rgba(17, 160, 181, 0.06);
+  color: var(--muted);
+  line-height: 1.5;
 }
 
 label {

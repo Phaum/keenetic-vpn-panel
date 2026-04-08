@@ -49,6 +49,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "command_timeout": 30,
         "locations_limit": 20,
     },
+    "automation": {
+        "enabled": False,
+        "check_interval": 600,
+    },
     "autostart": {
         "enabled": False,
         "service_name": "keenetic-vpn-panel",
@@ -109,15 +113,28 @@ SHELL_IMPORT_MAP = {
 STATE_LOCK = threading.Lock()
 ACTION_LOCK = threading.Lock()
 VPN_COMMAND_LOCK = threading.Lock()
+AUTOMATION_WAKE_EVENT = threading.Event()
 STATE: dict[str, Any] = {
     "last_check": None,
     "last_rotation": None,
+    "last_automation_action": None,
     "last_script_generation": None,
     "last_cli_action": None,
     "last_vpn_status": None,
     "last_vpn_locations": None,
     "last_autostart_action": None,
     "last_update_action": None,
+    "automation_runtime": {
+        "thread_alive": False,
+        "loop_running": False,
+        "thread_started_at": None,
+        "last_started_at": None,
+        "last_completed_at": None,
+        "next_check_at": None,
+        "last_error": None,
+        "last_result": None,
+        "current_interval": None,
+    },
 }
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -132,8 +149,22 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def utc_from_timestamp(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+
+
 def deep_copy(data: Any) -> Any:
     return json.loads(json.dumps(data))
+
+
+def notify_automation_config_changed() -> None:
+    AUTOMATION_WAKE_EVENT.set()
+
+
+def update_automation_runtime(**updates: Any) -> None:
+    with STATE_LOCK:
+        runtime = STATE.setdefault("automation_runtime", {})
+        runtime.update(updates)
 
 
 def merge_defaults(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -265,6 +296,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         ("panel", "port"),
         ("adguardvpn", "command_timeout"),
         ("adguardvpn", "locations_limit"),
+        ("automation", "check_interval"),
         ("vpn", "top_count"),
         ("vpn", "timeout"),
         ("vpn", "connect_timeout"),
@@ -284,6 +316,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"Field '{section}.{key}' must be greater than zero")
         merged[section][key] = value
 
+    merged["automation"]["enabled"] = bool(merged.get("automation", {}).get("enabled", False))
     merged["autostart"]["enabled"] = bool(merged.get("autostart", {}).get("enabled", False))
     merged["logging"]["debug_enabled"] = bool(merged.get("logging", {}).get("debug_enabled", False))
 
@@ -454,6 +487,27 @@ def ensure_runtime_dirs(config: dict[str, Any]) -> None:
         Path(config["logging"]["debug_log_file"]).parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         return
+
+
+def get_automation_status(config: dict[str, Any]) -> dict[str, Any]:
+    with STATE_LOCK:
+        runtime = deep_copy(STATE.get("automation_runtime") or {})
+        last_action = deep_copy(STATE.get("last_automation_action"))
+
+    return {
+        "enabled": bool(config["automation"]["enabled"]),
+        "check_interval": int(config["automation"]["check_interval"]),
+        "thread_alive": bool(runtime.get("thread_alive")),
+        "loop_running": bool(runtime.get("loop_running")),
+        "thread_started_at": runtime.get("thread_started_at"),
+        "last_started_at": runtime.get("last_started_at"),
+        "last_completed_at": runtime.get("last_completed_at"),
+        "next_check_at": runtime.get("next_check_at"),
+        "last_error": runtime.get("last_error"),
+        "last_result": runtime.get("last_result"),
+        "current_interval": runtime.get("current_interval"),
+        "last_action": last_action,
+    }
 
 
 def append_rotation_log(config: dict[str, Any], message: str) -> None:
@@ -831,14 +885,38 @@ def try_rotation_quick_connect(config: dict[str, Any], output_lines: list[str]) 
     return step
 
 
-def run_rotation(config: dict[str, Any]) -> dict[str, Any]:
-    with ACTION_LOCK:
+def run_rotation(
+    config: dict[str, Any],
+    *,
+    trigger: str = "manual",
+    wait_for_lock: bool = True,
+) -> dict[str, Any]:
+    action_lock_acquired = ACTION_LOCK.acquire(blocking=wait_for_lock)
+    if not action_lock_acquired:
+        result = {
+            "success": True,
+            "message": "Другая проверка или ротация уже выполняется, автоматический запуск пропущен.",
+            "executed_at": utc_now(),
+            "stdout": "",
+            "stderr": "",
+            "returncode": 0,
+            "command": [],
+            "generated_script": None,
+            "skipped": True,
+            "trigger": trigger,
+            "runner": "python-native",
+        }
+        append_debug_log(config, "rotation.action_lock.busy", result=result)
+        return result
+
+    try:
         generation = generate_script(config)
         command = [config["autostart"]["python_bin"], "vpn_panel_server.py", "rotate"]
         append_debug_log(
             config,
             "rotation.started",
             command=command,
+            trigger=trigger,
             test_url=config["vpn"]["test_url"],
             top_count=config["vpn"]["top_count"],
         )
@@ -859,6 +937,8 @@ def run_rotation(config: dict[str, Any]) -> dict[str, Any]:
                 "command": command,
                 "generated_script": generation,
                 "skipped": bool(active_pid),
+                "trigger": trigger,
+                "runner": "python-native",
             }
             with STATE_LOCK:
                 STATE["last_rotation"] = result
@@ -885,6 +965,7 @@ def run_rotation(config: dict[str, Any]) -> dict[str, Any]:
                     "generated_script": generation,
                     "initial_check": initial_check,
                     "attempts": attempts,
+                    "trigger": trigger,
                     "runner": "python-native",
                 }
                 with STATE_LOCK:
@@ -914,6 +995,7 @@ def run_rotation(config: dict[str, Any]) -> dict[str, Any]:
                         "generated_script": generation,
                         "initial_check": initial_check,
                         "attempts": attempts,
+                        "trigger": trigger,
                         "runner": "python-native",
                     }
                     with STATE_LOCK:
@@ -945,6 +1027,7 @@ def run_rotation(config: dict[str, Any]) -> dict[str, Any]:
                     "initial_check": initial_check,
                     "attempts": attempts,
                     "locations": locations_data["payload"],
+                    "trigger": trigger,
                     "runner": "python-native",
                 }
                 with STATE_LOCK:
@@ -970,6 +1053,7 @@ def run_rotation(config: dict[str, Any]) -> dict[str, Any]:
                         "initial_check": initial_check,
                         "attempts": attempts,
                         "locations": locations_data["payload"],
+                        "trigger": trigger,
                         "runner": "python-native",
                     }
                     with STATE_LOCK:
@@ -997,6 +1081,7 @@ def run_rotation(config: dict[str, Any]) -> dict[str, Any]:
                 "initial_check": initial_check,
                 "attempts": attempts,
                 "locations": locations_data["payload"],
+                "trigger": trigger,
                 "runner": "python-native",
             }
         except Exception as exc:  # noqa: BLE001
@@ -1010,6 +1095,7 @@ def run_rotation(config: dict[str, Any]) -> dict[str, Any]:
                 "command": command,
                 "generated_script": generation,
                 "attempts": attempts,
+                "trigger": trigger,
                 "runner": "python-native",
             }
             append_rotation_log(config, f"ERROR: rotation crashed: {exc}")
@@ -1021,6 +1107,152 @@ def run_rotation(config: dict[str, Any]) -> dict[str, Any]:
             STATE["last_rotation"] = result
         append_debug_log(config, "rotation.completed", result=result)
         return result
+    finally:
+        ACTION_LOCK.release()
+
+
+def update_automation_config(
+    config: dict[str, Any],
+    *,
+    enabled: bool | None = None,
+    check_interval: int | None = None,
+) -> dict[str, Any]:
+    updated = deep_copy(config)
+    if enabled is not None:
+        updated["automation"]["enabled"] = bool(enabled)
+    if check_interval is not None:
+        updated["automation"]["check_interval"] = int(check_interval)
+    validated = validate_config(updated)
+    write_config(validated)
+    notify_automation_config_changed()
+    return {
+        "success": True,
+        "message": "Настройки автоматического режима обновлены.",
+        "config": validated,
+        "automation": get_automation_status(validated),
+        "updated_at": utc_now(),
+    }
+
+
+def run_automation_cycle(config: dict[str, Any]) -> dict[str, Any]:
+    started_at = utc_now()
+    interval = int(config["automation"]["check_interval"])
+    update_automation_runtime(
+        loop_running=True,
+        last_started_at=started_at,
+        next_check_at=None,
+        last_error=None,
+        current_interval=interval,
+    )
+    result = run_rotation(config, trigger="automatic", wait_for_lock=False)
+    completed_at = utc_now()
+    payload = {
+        "success": bool(result.get("success")),
+        "message": result.get("message", ""),
+        "executed_at": result.get("executed_at") or completed_at,
+        "completed_at": completed_at,
+        "trigger": "automatic",
+        "skipped": bool(result.get("skipped")),
+        "returncode": result.get("returncode"),
+    }
+    with STATE_LOCK:
+        STATE["last_automation_action"] = payload
+
+    runtime_result = {
+        "success": payload["success"],
+        "message": payload["message"],
+        "skipped": payload["skipped"],
+        "executed_at": payload["executed_at"],
+    }
+    update_automation_runtime(
+        loop_running=False,
+        last_completed_at=completed_at,
+        last_error=None if payload["success"] else payload["message"],
+        last_result=runtime_result,
+    )
+    append_debug_log(config, "automation.cycle.completed", result=payload)
+    return payload
+
+
+def automation_loop(stop_event: threading.Event) -> None:
+    update_automation_runtime(
+        thread_alive=True,
+        thread_started_at=utc_now(),
+        loop_running=False,
+        last_error=None,
+    )
+    config_signature: tuple[bool, int] | None = None
+    next_run_monotonic: float | None = None
+
+    while not stop_event.is_set():
+        try:
+            config = load_config()
+            ensure_runtime_dirs(config)
+            automation_cfg = config["automation"]
+            enabled = bool(automation_cfg["enabled"])
+            interval = int(automation_cfg["check_interval"])
+            signature = (enabled, interval)
+            now_monotonic = time.monotonic()
+
+            if signature != config_signature:
+                config_signature = signature
+                next_run_monotonic = now_monotonic if enabled else None
+
+            if not enabled:
+                update_automation_runtime(
+                    loop_running=False,
+                    next_check_at=None,
+                    current_interval=interval,
+                )
+                AUTOMATION_WAKE_EVENT.wait(timeout=1)
+                AUTOMATION_WAKE_EVENT.clear()
+                continue
+
+            if next_run_monotonic is None:
+                next_run_monotonic = now_monotonic
+
+            wait_seconds = max(0.0, next_run_monotonic - now_monotonic)
+            update_automation_runtime(
+                loop_running=False,
+                current_interval=interval,
+                next_check_at=utc_from_timestamp(time.time() + wait_seconds),
+            )
+
+            if wait_seconds > 0:
+                AUTOMATION_WAKE_EVENT.wait(timeout=min(1.0, wait_seconds))
+                AUTOMATION_WAKE_EVENT.clear()
+                continue
+
+            run_automation_cycle(config)
+            next_run_monotonic = time.monotonic() + interval
+            update_automation_runtime(next_check_at=utc_from_timestamp(time.time() + interval))
+        except Exception as exc:  # noqa: BLE001
+            update_automation_runtime(
+                loop_running=False,
+                last_completed_at=utc_now(),
+                last_error=str(exc),
+                next_check_at=utc_from_timestamp(time.time() + 5),
+            )
+            AUTOMATION_WAKE_EVENT.wait(timeout=5)
+            AUTOMATION_WAKE_EVENT.clear()
+
+    update_automation_runtime(
+        thread_alive=False,
+        loop_running=False,
+        next_check_at=None,
+    )
+
+
+def start_automation_worker() -> tuple[threading.Thread, threading.Event]:
+    stop_event = threading.Event()
+    worker = threading.Thread(
+        target=automation_loop,
+        args=(stop_event,),
+        name="vpn-automation",
+        daemon=True,
+    )
+    worker.start()
+    return worker, stop_event
 
 
 def command_exists(command: str) -> bool:
@@ -1705,10 +1937,12 @@ def collect_state(config: dict[str, Any]) -> dict[str, Any]:
             "debug_max_bytes": config["logging"]["debug_max_bytes"],
             "debug_backup_count": config["logging"]["debug_backup_count"],
         },
+        "automation": get_automation_status(config),
         "resource_count": len(config.get("resources", {}).get("links", [])),
         "last_good_location": last_good_location,
         "last_check": snapshot.get("last_check"),
         "last_rotation": snapshot.get("last_rotation"),
+        "last_automation_action": snapshot.get("last_automation_action"),
         "last_script_generation": snapshot.get("last_script_generation"),
         "last_cli_action": snapshot.get("last_cli_action"),
         "last_vpn_status": snapshot.get("last_vpn_status"),
@@ -1742,6 +1976,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 return self.send_json(get_adguardvpn_status(load_config()))
             if self.path == "/api/adguardvpn/locations":
                 return self.send_json(get_adguardvpn_locations(load_config()))
+            if self.path == "/api/automation/status":
+                return self.send_json(get_automation_status(load_config()))
             if self.path == "/api/autostart/status":
                 return self.send_json(get_autostart_status(load_config()))
             if self.path == "/api/script":
@@ -1791,6 +2027,7 @@ class PanelHandler(BaseHTTPRequestHandler):
             if self.path == "/api/config":
                 config = validate_config(body)
                 write_config(config)
+                notify_automation_config_changed()
                 generation = generate_script(config)
                 return self.send_json({"config": config, "generation": generation})
             if self.path == "/api/actions/generate-script":
@@ -1798,9 +2035,16 @@ class PanelHandler(BaseHTTPRequestHandler):
             if self.path == "/api/actions/check":
                 return self.send_json(perform_http_check(load_config()))
             if self.path == "/api/actions/rotate":
-                return self.send_json(run_rotation(load_config()))
+                return self.send_json(run_rotation(load_config(), trigger="manual"))
             if self.path == "/api/actions/clear-logs":
                 return self.send_json(clear_logs(load_config()))
+            if self.path == "/api/automation/update":
+                payload = update_automation_config(
+                    load_config(),
+                    enabled=body.get("enabled"),
+                    check_interval=body.get("check_interval"),
+                )
+                return self.send_json(payload)
             if self.path == "/api/adguardvpn/connect":
                 location = str(body.get("location", "")).strip() or None
                 return self.send_json(connect_adguardvpn(load_config(), location))
@@ -1857,7 +2101,7 @@ class ReusableThreadingHTTPServer(ThreadingHTTPServer):
 def main() -> None:
     config = ensure_config()
     if len(sys.argv) > 1 and sys.argv[1] == "rotate":
-        result = run_rotation(config)
+        result = run_rotation(config, trigger="cli")
         print(json.dumps(result, ensure_ascii=False, indent=2))
         raise SystemExit(0 if result.get("success") else 1)
 
@@ -1865,8 +2109,15 @@ def main() -> None:
     host = config["panel"]["host"]
     port = config["panel"]["port"]
     server = ReusableThreadingHTTPServer((host, port), PanelHandler)
+    automation_thread, automation_stop_event = start_automation_worker()
     print(f"VPN panel running on http://{host}:{port}")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        automation_stop_event.set()
+        notify_automation_config_changed()
+        automation_thread.join(timeout=2)
+        server.server_close()
 
 
 if __name__ == "__main__":

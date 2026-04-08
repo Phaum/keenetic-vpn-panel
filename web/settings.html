@@ -14,7 +14,6 @@
           <div>
             <p class="brand-eyebrow">AdGuard VPN</p>
             <h1>Keenetic Control</h1>
-            <p class="brand-copy">Мониторинг, ротация и быстрый доступ к локальной инфраструктуре.</p>
           </div>
         </div>
 
@@ -22,7 +21,13 @@
           <a href="/index.html" class="nav-link" data-nav="dashboard">Обзор</a>
           <a href="/settings.html" class="nav-link" data-nav="settings">Параметры</a>
           <a href="/logs.html" class="nav-link" data-nav="logs">Логи</a>
-          <a href="/script.html" class="nav-link" data-nav="script">Shell-wrapper</a>
+          <a href="/script.html" class="nav-link" data-nav="script">Авто исполнитель</a>
+          <a
+            href="https://github.com/Phaum/keenetic-vpn-panel"
+            class="nav-link"
+            target="_blank"
+            rel="noreferrer"
+          >GitHub проекта</a>
         </nav>
 
         <div class="sidebar-panel">
@@ -55,8 +60,7 @@
             <p class="topbar-eyebrow">Config center</p>
             <h2>Настройки панели и сценария</h2>
             <p class="topbar-copy">
-              Все редактируемые параметры собраны на отдельной странице, включая список ресурсов
-              для бокового меню.
+              Все редактируемые параметры.
             </p>
           </div>
           <div class="action-cluster">
@@ -67,6 +71,30 @@
         <section class="panel">
           <form id="config-form" class="config-layout">
             <div class="config-main">
+              <section class="form-block">
+                <div class="block-head">
+                  <h4>Автоматический режим</h4>
+                  <div class="section-actions">
+                    <button class="ghost small" type="button" id="automation-refresh-status">Статус</button>
+                    <button class="ghost small" type="button" id="automation-toggle">Переключить</button>
+                  </div>
+                </div>
+                <div class="field-grid">
+                  <label class="checkbox-label full-span">
+                    <input name="automation.enabled" type="checkbox" />
+                    Включить фоновую автоматическую проверку и ротацию при недоступности ресурса
+                  </label>
+                  <label>
+                    Интервал автопроверки, сек
+                    <input name="automation.check_interval" type="number" min="1" required />
+                  </label>
+                  <div class="hint-card full-span">
+                    При включённом режиме панель сама запускает проверку по интервалу. Если ресурс
+                    недоступен, автоматически стартует ротация локаций.
+                  </div>
+                </div>
+              </section>
+
               <section class="form-block">
                 <div class="block-head">
                   <h4>Проверка ресурса</h4>
@@ -121,7 +149,7 @@
                     <input name="panel.port" type="number" min="1" required />
                   </label>
                   <label>
-                    Legacy runner для shell-wrapper
+                    Исполнитель для Авто исполнителя
                     <input name="panel.script_runner" type="text" required />
                   </label>
                   <label>
@@ -279,6 +307,18 @@
               <section class="side-card">
                 <span class="meta-label">Количество ресурсов</span>
                 <strong id="aside-resource-count">-</strong>
+              </section>
+              <section class="side-card">
+                <span class="meta-label">Авто-режим</span>
+                <strong id="automation-status-summary">Нет данных</strong>
+              </section>
+              <section class="side-card">
+                <span class="meta-label">Следующая автопроверка</span>
+                <strong id="automation-next-check">Нет данных</strong>
+              </section>
+              <section class="side-card">
+                <span class="meta-label">Последний авто-цикл</span>
+                <strong id="automation-last-action">Нет данных</strong>
               </section>
               <section class="side-card">
                 <span class="meta-label">Последний автозапуск</span>

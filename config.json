@@ -7,8 +7,8 @@
     "generated_script": "generated/adguardvpn-rotate.sh"
   },
   "vpn": {
-    "test_url": "https://example.com/",
-    "expected_text": "Example Domain",
+    "test_url": "https://web.telegram.org/k/",
+    "expected_text": "Telegram is a cloud-based mobile and desktop messaging app with a focus on security and speed.",
     "top_count": 10,
     "timeout": 15,
     "connect_timeout": 8,
@@ -20,6 +20,10 @@
     "cli_command": "adguardvpn-cli",
     "command_timeout": 30,
     "locations_limit": 20
+  },
+  "automation": {
+    "enabled": false,
+    "check_interval": 600
   },
   "autostart": {
     "enabled": false,
