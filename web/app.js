@@ -51,6 +51,20 @@ const fields = [
   "transparent_proxy.chain_name",
   "transparent_proxy.target_subnets",
   "transparent_proxy.bypass_subnets",
+  "transparent_proxy.destination_subnets",
+  "transparent_proxy.destination_domains",
+  "transparent_proxy.ipset_path",
+  "transparent_proxy.destination_subnet_set",
+  "transparent_proxy.destination_domain_set",
+  "transparent_proxy.dnsmasq_ipset_config_path",
+  "transparent_proxy.dnsmasq_restart_command",
+  "transparent_proxy.ip_path",
+  "transparent_proxy.tun_interface",
+  "transparent_proxy.tun_route_table",
+  "transparent_proxy.tun_fwmark",
+  "transparent_proxy.tun_rule_priority",
+  "transparent_proxy.dns_hijack_enabled",
+  "transparent_proxy.dns_hijack_port",
   "transparent_proxy.rules_script_path",
   "transparent_proxy.stop_script_path",
   "paths.lock_file",
@@ -477,8 +491,13 @@ function formatTransparentProxySummary(status) {
   if (!status.available) {
     return "Недоступен";
   }
+  if (status.mode === "tun-policy" && status.rules_installed) {
+    return status.selective_enabled ? "TUN selective" : "TUN active";
+  }
   if (status.running && status.rules_installed) {
-    return `Активен • ${status.listener}`;
+    return status.selective_enabled
+      ? `Selective • ${status.listener}`
+      : `Активен • ${status.listener}`;
   }
   if (status.vpn_connected) {
     return "Ожидает синхронизации";
@@ -546,10 +565,22 @@ function formatTransparentProxyStatusText(status) {
   const lines = [];
   lines.push(`Режим: ${status.mode || (status.enabled ? "transparent-redsocks" : "router-only")}`);
   lines.push(`Зависимости: ${status.available ? "доступны" : "не найдены"}`);
-  lines.push(`redsocks: ${status.running ? `запущен (PID ${status.pid || "-"})` : "остановлен"}`);
+  if (status.mode === "transparent-redsocks") {
+    lines.push(`redsocks: ${status.running ? `запущен (PID ${status.pid || "-"})` : "остановлен"}`);
+  }
   lines.push(`Правила iptables: ${status.rules_installed ? "применены" : "не применены"}`);
-  lines.push(`Локальный listener: ${status.listener || "-"}`);
+  if (status.listener) {
+    lines.push(`Локальный listener: ${status.listener}`);
+  }
   lines.push(`Chain: ${status.chain_name || "-"}`);
+  lines.push(`Selective mode: ${status.selective_enabled ? "включён" : "выключен"}`);
+  if (status.mode === "tun-policy") {
+    lines.push(`TUN iface: ${status.tun_interface || "auto"}`);
+    lines.push(`Route table: ${status.tun_route_table || "-"}`);
+    lines.push(`FWMark: ${status.tun_fwmark || "-"}`);
+    lines.push(`Rule priority: ${status.tun_rule_priority || "-"}`);
+    lines.push(`DNS hijack: ${status.dns_hijack_enabled ? `включён (${status.dns_hijack_port})` : "выключен"}`);
+  }
   lines.push(`VPN: ${status.vpn_connected ? "подключён" : "не подключён"}`);
   if (status.vpn_mode) {
     lines.push(`VPN mode: ${status.vpn_mode}`);
@@ -570,7 +601,25 @@ function formatTransparentProxyStatusText(status) {
   if (status.bypass_subnets?.length) {
     lines.push(`Bypass subnets: ${status.bypass_subnets.join(", ")}`);
   }
+  if (status.destination_subnets?.length) {
+    lines.push(`Destination CIDR: ${status.destination_subnets.join(", ")}`);
+  }
+  if (status.destination_domains?.length) {
+    lines.push(`Destination domains: ${status.destination_domains.join(", ")}`);
+  }
+  if (status.destination_subnet_set) {
+    lines.push(`ipset net set: ${status.destination_subnet_set}`);
+  }
+  if (status.destination_domain_set) {
+    lines.push(`ipset domain set: ${status.destination_domain_set}`);
+  }
   lines.push(`redsocks.conf: ${status.redsocks_config_exists ? status.redsocks_config_path : `${status.redsocks_config_path} (не найден)`}`);
+  lines.push(`dnsmasq ipset conf: ${status.dnsmasq_ipset_config_exists ? status.dnsmasq_ipset_config_path : `${status.dnsmasq_ipset_config_path} (не найден)`}`);
+  if (status.dnsmasq_restart_command) {
+    lines.push(`dnsmasq restart: ${status.dnsmasq_restart_command}`);
+  } else {
+    lines.push("dnsmasq restart: не настроен");
+  }
   lines.push(`apply script: ${status.apply_script_exists ? status.apply_script_path : `${status.apply_script_path} (не найден)`}`);
   lines.push(`stop script: ${status.stop_script_exists ? status.stop_script_path : `${status.stop_script_path} (не найден)`}`);
   return lines.join("\n");
@@ -713,6 +762,19 @@ async function runTransparentProxyAction(url, payload, successPrefix) {
     }
     if (result.stderr) {
       sections.push(result.stderr.trim());
+    }
+  }
+  if (result.dnsmasq) {
+    sections.push("", "dnsmasq:");
+    sections.push(
+      result.dnsmasq.message ||
+        (result.dnsmasq.success ? "Перезапуск выполнен." : "Перезапуск не выполнен.")
+    );
+    if (result.dnsmasq.stdout) {
+      sections.push(result.dnsmasq.stdout.trim());
+    }
+    if (result.dnsmasq.stderr) {
+      sections.push(result.dnsmasq.stderr.trim());
     }
   }
   setTransparentProxyMessage(sections.filter(Boolean).join("\n"));

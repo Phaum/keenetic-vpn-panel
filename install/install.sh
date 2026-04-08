@@ -31,6 +31,16 @@ install_pkg_if_missing() {
   fi
 }
 
+install_first_available_pkg() {
+  for PKG in "$@"; do
+    if opkg info "$PKG" >/dev/null 2>&1; then
+      install_pkg_if_missing "$PKG"
+      return 0
+    fi
+  done
+  return 1
+}
+
 download_file() {
   URL="$1"
   OUT="$2"
@@ -114,7 +124,9 @@ install_pkg_if_missing ca-certificates
 install_pkg_if_missing curl
 install_pkg_if_missing sudo
 install_pkg_if_missing python3
+install_pkg_if_missing ipset
 install_pkg_if_missing redsocks
+install_first_available_pkg ip-full ip || true
 if ! need_cmd curl && ! need_cmd wget; then
   install_pkg_if_missing wget-ssl
 fi
@@ -197,6 +209,7 @@ fi
 APP_DIR="$APP_DIR" DEFAULT_CONFIG_PATH="$DEFAULT_CONFIG_PATH" CONFIG_RESTORE_STATUS="$CONFIG_RESTORE_STATUS" /opt/bin/python3 - <<'PY'
 import json
 import os
+import shutil
 import socket
 from pathlib import Path
 
@@ -260,6 +273,57 @@ def choose_port(host: str, current: int, preserve_current: bool) -> int:
 
     raise SystemExit("Could not find a free TCP port for the panel")
 
+def detect_dnsmasq_conf_path() -> str:
+    candidate_config_files = [
+        Path("/opt/etc/dnsmasq.conf"),
+        Path("/etc/dnsmasq.conf"),
+    ]
+    candidate_dirs = [
+        Path("/opt/etc/dnsmasq.d"),
+        Path("/opt/etc/dnsmasq.conf.d"),
+        Path("/etc/dnsmasq.d"),
+    ]
+
+    for config_file in candidate_config_files:
+        if not config_file.exists():
+            continue
+        try:
+            for line in config_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if stripped.startswith("conf-dir="):
+                    directory = stripped.split("=", 1)[1].split(",", 1)[0].strip()
+                    if directory:
+                        path = Path(directory)
+                        path.mkdir(parents=True, exist_ok=True)
+                        return str(path / "keenetic-vpn-panel-ipset.conf")
+        except OSError:
+            continue
+
+    for directory in candidate_dirs:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            return str(directory / "keenetic-vpn-panel-ipset.conf")
+        except OSError:
+            continue
+    return str(app_dir / "generated" / "dnsmasq-ipset-kvpn.conf")
+
+def detect_dnsmasq_restart_command() -> str:
+    candidates = [
+        "/opt/etc/init.d/S56dnsmasq restart",
+        "/opt/etc/init.d/S50dnsmasq restart",
+        "/etc/init.d/dnsmasq restart",
+        "service dnsmasq restart",
+    ]
+    for candidate in candidates:
+        executable = candidate.split(" ", 1)[0]
+        if os.path.isabs(executable) and Path(executable).exists():
+            return candidate
+        if not os.path.isabs(executable) and shutil.which(executable):
+            return candidate
+    return ""
+
 panel = config.setdefault("panel", {})
 current_host = str(panel.get("host", "")).strip()
 if current_host in {"", "127.0.0.1", "localhost"}:
@@ -277,8 +341,23 @@ autostart["pid_file"] = "/opt/var/run/keenetic-vpn-panel.pid"
 autostart["start_script_path"] = str(app_dir / "deploy" / "entware" / "start_vpn_panel.sh")
 autostart["init_script_path"] = "/opt/etc/init.d/S99keenetic-vpn-panel"
 
+transparent_proxy = config.setdefault("transparent_proxy", {})
+current_mode = str(transparent_proxy.get("mode", "")).strip().lower()
+if current_mode in {"", "router-only"}:
+    transparent_proxy["mode"] = "tun-policy"
+transparent_proxy["dnsmasq_ipset_config_path"] = detect_dnsmasq_conf_path()
+transparent_proxy["dnsmasq_restart_command"] = transparent_proxy.get("dnsmasq_restart_command") or detect_dnsmasq_restart_command()
+transparent_proxy["ip_path"] = transparent_proxy.get("ip_path") or "/opt/sbin/ip"
+transparent_proxy["ipset_path"] = transparent_proxy.get("ipset_path") or "/opt/sbin/ipset"
+transparent_proxy["iptables_path"] = transparent_proxy.get("iptables_path") or "/opt/sbin/iptables"
+transparent_proxy["dns_hijack_enabled"] = bool(transparent_proxy.get("dns_hijack_enabled", True))
+transparent_proxy["tun_interface"] = str(transparent_proxy.get("tun_interface", "auto") or "auto")
+
 config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")
 PY
+
+HOME="$ADGUARDVPN_HOME" adguardvpn-cli config set-mode TUN >/dev/null 2>&1 || true
+HOME="$ADGUARDVPN_HOME" adguardvpn-cli config set-tun-routing-mode NONE >/dev/null 2>&1 || true
 
 cat > "${APP_DIR}/deploy/entware/start_vpn_panel.sh" <<EOF
 #!/opt/bin/sh

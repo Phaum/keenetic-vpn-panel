@@ -200,6 +200,7 @@
                     <select name="transparent_proxy.mode">
                       <option value="router-only">Router only</option>
                       <option value="transparent-redsocks">Transparent proxy через redsocks</option>
+                      <option value="tun-policy">TUN policy routing</option>
                     </select>
                   </label>
                   <label>
@@ -255,6 +256,71 @@
                     <textarea name="transparent_proxy.bypass_subnets" rows="4" required></textarea>
                   </label>
                   <label class="full-span">
+                    Destination IP/CIDR для selective proxy
+                    <textarea name="transparent_proxy.destination_subnets" rows="4"></textarea>
+                  </label>
+                  <label class="full-span">
+                    Домены для selective proxy через dnsmasq/ipset
+                    <textarea name="transparent_proxy.destination_domains" rows="4"></textarea>
+                  </label>
+                  <label>
+                    Команда ipset
+                    <input name="transparent_proxy.ipset_path" type="text" required />
+                  </label>
+                  <label>
+                    ipset для CIDR
+                    <input name="transparent_proxy.destination_subnet_set" type="text" required />
+                  </label>
+                  <label>
+                    ipset для доменов
+                    <input name="transparent_proxy.destination_domain_set" type="text" required />
+                  </label>
+                  <label class="full-span">
+                    Путь к dnsmasq ipset-конфигу
+                    <input name="transparent_proxy.dnsmasq_ipset_config_path" type="text" required />
+                  </label>
+                  <label class="full-span">
+                    Команда перезапуска dnsmasq
+                    <input
+                      name="transparent_proxy.dnsmasq_restart_command"
+                      type="text"
+                      placeholder="/etc/init.d/dnsmasq restart"
+                    />
+                  </label>
+                  <label>
+                    Команда ip
+                    <input name="transparent_proxy.ip_path" type="text" required />
+                  </label>
+                  <label>
+                    TUN interface
+                    <input
+                      name="transparent_proxy.tun_interface"
+                      type="text"
+                      required
+                      placeholder="auto"
+                    />
+                  </label>
+                  <label>
+                    Route table
+                    <input name="transparent_proxy.tun_route_table" type="number" min="1" required />
+                  </label>
+                  <label>
+                    FWMark
+                    <input name="transparent_proxy.tun_fwmark" type="number" min="1" required />
+                  </label>
+                  <label>
+                    Rule priority
+                    <input name="transparent_proxy.tun_rule_priority" type="number" min="1" required />
+                  </label>
+                  <label class="checkbox-label">
+                    <input name="transparent_proxy.dns_hijack_enabled" type="checkbox" />
+                    Перехватывать DNS клиентов на локальный dnsmasq
+                  </label>
+                  <label>
+                    DNS hijack port
+                    <input name="transparent_proxy.dns_hijack_port" type="number" min="1" required />
+                  </label>
+                  <label class="full-span">
                     Скрипт применения правил
                     <input name="transparent_proxy.rules_script_path" type="text" required />
                   </label>
@@ -265,7 +331,9 @@
                   <div class="hint-card full-span">
                     Этот режим прозрачно перенаправляет TCP-трафик из выбранных LAN-подсетей в local
                     redsocks, а тот уже отправляет соединения в listener adguardvpn-cli. Для UDP/DNS
-                    нужен отдельный слой.
+                    нужен отдельный слой. Если заданы destination CIDR или домены, редирект будет
+                    выполняться только для них; доменные правила требуют dnsmasq с поддержкой ipset.
+                    Для полноценного TCP+UDP используй режим TUN policy routing.
                   </div>
                 </div>
                 <pre id="transparent-proxy-output" class="console compact-console">Transparent proxy ещё не загружен.</pre>

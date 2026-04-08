@@ -80,6 +80,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "chain_name": "KVPN_REDSOCKS",
         "target_subnets": "192.168.1.0/24",
         "bypass_subnets": "0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4",
+        "destination_subnets": "",
+        "destination_domains": "",
+        "ipset_path": "ipset",
+        "destination_subnet_set": "KVPN_DST_NET",
+        "destination_domain_set": "KVPN_DST_DNS",
+        "dnsmasq_ipset_config_path": "generated/dnsmasq-ipset-kvpn.conf",
+        "dnsmasq_restart_command": "",
+        "ip_path": "ip",
+        "tun_interface": "auto",
+        "tun_route_table": 246,
+        "tun_fwmark": 246,
+        "tun_rule_priority": 12460,
+        "dns_hijack_enabled": True,
+        "dns_hijack_port": 53,
         "rules_script_path": "generated/apply-transparent-proxy.sh",
         "stop_script_path": "generated/remove-transparent-proxy.sh",
     },
@@ -161,7 +175,7 @@ STATE: dict[str, Any] = {
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 TRANSPARENT_PROXY_TYPES = {"auto", "socks5", "http-connect"}
-TRANSPARENT_PROXY_MODES = {"router-only", "transparent-redsocks"}
+TRANSPARENT_PROXY_MODES = {"router-only", "transparent-redsocks", "tun-policy"}
 ROUTER_ENV = {
     "SSL_CERT_FILE": "/opt/etc/ssl/certs/ca-certificates.crt",
     "HOME": "/opt/home/admin",
@@ -326,6 +340,35 @@ def normalize_network_items(value: Any, field_name: str, *, allow_empty: bool = 
     return ", ".join(normalized)
 
 
+def normalize_domain_items(value: Any, field_name: str, *, allow_empty: bool = False) -> str:
+    items = parse_csv_items(value)
+    if not items:
+        if allow_empty:
+            return ""
+        raise ValueError(f"Field '{field_name}' must contain at least one domain")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        domain = item.strip().lower().rstrip(".")
+        if domain.startswith("*."):
+            domain = domain[2:]
+        if not domain:
+            continue
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*[a-z0-9]", domain):
+            raise ValueError(f"Field '{field_name}' contains invalid domain '{item}'")
+        if ".." in domain:
+            raise ValueError(f"Field '{field_name}' contains invalid domain '{item}'")
+        if domain in seen:
+            continue
+        normalized.append(domain)
+        seen.add(domain)
+
+    if not normalized and not allow_empty:
+        raise ValueError(f"Field '{field_name}' must contain at least one domain")
+    return ", ".join(normalized)
+
+
 def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     merged = merge_defaults(DEFAULT_CONFIG, config)
 
@@ -350,11 +393,17 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         ("transparent_proxy", "redsocks_pid_file"),
         ("transparent_proxy", "redsocks_config_path"),
         ("transparent_proxy", "iptables_path"),
+        ("transparent_proxy", "ipset_path"),
         ("transparent_proxy", "chain_name"),
+        ("transparent_proxy", "destination_subnet_set"),
+        ("transparent_proxy", "destination_domain_set"),
         ("transparent_proxy", "target_subnets"),
         ("transparent_proxy", "bypass_subnets"),
+        ("transparent_proxy", "dnsmasq_ipset_config_path"),
         ("transparent_proxy", "rules_script_path"),
         ("transparent_proxy", "stop_script_path"),
+        ("transparent_proxy", "ip_path"),
+        ("transparent_proxy", "tun_interface"),
         ("vpn", "test_url"),
         ("vpn", "expected_text"),
         ("paths", "lock_file"),
@@ -377,6 +426,10 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         ("adguardvpn", "locations_limit"),
         ("transparent_proxy", "proxy_port"),
         ("transparent_proxy", "listen_port"),
+        ("transparent_proxy", "tun_route_table"),
+        ("transparent_proxy", "tun_fwmark"),
+        ("transparent_proxy", "tun_rule_priority"),
+        ("transparent_proxy", "dns_hijack_port"),
         ("automation", "check_interval"),
         ("vpn", "top_count"),
         ("vpn", "timeout"),
@@ -410,7 +463,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
             "Field 'transparent_proxy.mode' must be one of: router-only, transparent-redsocks"
         )
     transparent_proxy["mode"] = mode_raw
-    transparent_proxy["enabled"] = mode_raw == "transparent-redsocks"
+    transparent_proxy["enabled"] = mode_raw in {"transparent-redsocks", "tun-policy"}
 
     proxy_type = str(transparent_proxy.get("proxy_type", "auto")).strip().lower()
     if proxy_type not in TRANSPARENT_PROXY_TYPES:
@@ -425,6 +478,15 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
             "Field 'transparent_proxy.chain_name' must start with a letter, contain only A-Z, 0-9, _ and be at most 28 chars"
         )
     transparent_proxy["chain_name"] = chain_name
+
+    for key in ("destination_subnet_set", "destination_domain_set"):
+        set_name = str(transparent_proxy.get(key, "")).strip().upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,30}", set_name):
+            raise ValueError(
+                f"Field 'transparent_proxy.{key}' must start with a letter, contain only A-Z, 0-9, _ and be at most 31 chars"
+            )
+        transparent_proxy[key] = set_name
+
     transparent_proxy["target_subnets"] = normalize_network_items(
         transparent_proxy.get("target_subnets", ""),
         "transparent_proxy.target_subnets",
@@ -434,6 +496,20 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         "transparent_proxy.bypass_subnets",
         allow_empty=True,
     )
+    transparent_proxy["destination_subnets"] = normalize_network_items(
+        transparent_proxy.get("destination_subnets", ""),
+        "transparent_proxy.destination_subnets",
+        allow_empty=True,
+    )
+    transparent_proxy["destination_domains"] = normalize_domain_items(
+        transparent_proxy.get("destination_domains", ""),
+        "transparent_proxy.destination_domains",
+        allow_empty=True,
+    )
+    transparent_proxy["dnsmasq_restart_command"] = str(
+        transparent_proxy.get("dnsmasq_restart_command", "")
+    ).strip()
+    transparent_proxy["dns_hijack_enabled"] = bool(transparent_proxy.get("dns_hijack_enabled", False))
 
     resources = merged.get("resources", {})
     links = resources.get("links", [])
@@ -607,6 +683,7 @@ def ensure_runtime_dirs(config: dict[str, Any]) -> None:
     for key in (
         "redsocks_pid_file",
         "redsocks_config_path",
+        "dnsmasq_ipset_config_path",
         "rules_script_path",
         "stop_script_path",
     ):
@@ -853,6 +930,21 @@ def run_managed_command(
         return result
 
 
+def run_shell_text_command(
+    config: dict[str, Any],
+    command_text: str,
+    *,
+    timeout: int,
+    event: str,
+) -> dict[str, Any]:
+    return run_managed_command(
+        config,
+        ["sh", "-c", command_text],
+        timeout=timeout,
+        event=event,
+    )
+
+
 def parse_listener_endpoint(listener: str | None) -> dict[str, Any] | None:
     text = strip_ansi(listener or "").strip()
     if not text:
@@ -887,6 +979,34 @@ def infer_transparent_proxy_type(config: dict[str, Any], vpn_status: dict[str, A
     return "socks5"
 
 
+def prepare_adguardvpn_transport(config: dict[str, Any]) -> dict[str, Any]:
+    mode = str(config["transparent_proxy"].get("mode", "router-only")).strip().lower()
+    steps: list[dict[str, Any]] = []
+
+    if mode == "transparent-redsocks":
+        steps.append(run_adguardvpn_cli(config, ["config", "set-mode", "SOCKS"]))
+    elif mode == "tun-policy":
+        steps.append(run_adguardvpn_cli(config, ["config", "set-mode", "TUN"]))
+        steps.append(run_adguardvpn_cli(config, ["config", "set-tun-routing-mode", "NONE"]))
+    else:
+        return {
+            "success": True,
+            "mode": mode,
+            "steps": [],
+            "message": "Дополнительная настройка transport mode не требуется.",
+            "executed_at": utc_now(),
+        }
+
+    success = all(step.get("success") for step in steps)
+    return {
+        "success": success,
+        "mode": mode,
+        "steps": steps,
+        "message": "Transport mode подготовлен." if success else "Не удалось подготовить transport mode.",
+        "executed_at": utc_now(),
+    }
+
+
 def resolve_transparent_proxy_upstream(
     config: dict[str, Any],
     vpn_status: dict[str, Any] | None = None,
@@ -914,6 +1034,204 @@ def resolve_transparent_proxy_upstream(
     }
 
 
+def has_selective_targets(config: dict[str, Any]) -> bool:
+    transparent_proxy = config["transparent_proxy"]
+    return bool(
+        parse_csv_items(transparent_proxy.get("destination_subnets", ""))
+        or parse_csv_items(transparent_proxy.get("destination_domains", ""))
+    )
+
+
+def transparent_proxy_uses_redsocks(config: dict[str, Any]) -> bool:
+    return str(config["transparent_proxy"].get("mode", "")).strip().lower() == "transparent-redsocks"
+
+
+def transparent_proxy_uses_tun(config: dict[str, Any]) -> bool:
+    return str(config["transparent_proxy"].get("mode", "")).strip().lower() == "tun-policy"
+
+
+def render_dnsmasq_ipset_config(config: dict[str, Any]) -> str:
+    transparent_proxy = config["transparent_proxy"]
+    if not transparent_proxy.get("enabled"):
+        return ""
+    domain_set = transparent_proxy["destination_domain_set"]
+    domains = parse_csv_items(transparent_proxy.get("destination_domains", ""))
+    if not domains:
+        return ""
+    lines = [
+        "# Generated by keenetic-vpn-panel",
+        "# dnsmasq must be restarted to load updated config files.",
+    ]
+    lines.extend([f"ipset=/{domain}/{domain_set}" for domain in domains])
+    return "\n".join(lines) + "\n"
+
+
+def render_tun_policy_apply_script(config: dict[str, Any]) -> str:
+    transparent_proxy = config["transparent_proxy"]
+    bypass_subnets = parse_csv_items(transparent_proxy["bypass_subnets"])
+    target_subnets = parse_csv_items(transparent_proxy["target_subnets"])
+    destination_subnets = parse_csv_items(transparent_proxy.get("destination_subnets", ""))
+    destination_domains = parse_csv_items(transparent_proxy.get("destination_domains", ""))
+    selective_mode = bool(destination_subnets or destination_domains)
+    dns_hijack_enabled = bool(transparent_proxy.get("dns_hijack_enabled", False))
+    lines = [
+        "#!/opt/bin/sh",
+        "",
+        "set -eu",
+        "",
+        f'IP={shlex.quote(transparent_proxy["ip_path"])}',
+        f'IPTABLES={shlex.quote(transparent_proxy["iptables_path"])}',
+        f'IPSET={shlex.quote(transparent_proxy["ipset_path"])}',
+        f'MANGLE_CHAIN={shlex.quote(transparent_proxy["chain_name"])}',
+        f'DNS_CHAIN={shlex.quote(transparent_proxy["chain_name"] + "_DNS")}',
+        f'DEST_NET_SET={shlex.quote(transparent_proxy["destination_subnet_set"])}',
+        f'DEST_DOMAIN_SET={shlex.quote(transparent_proxy["destination_domain_set"])}',
+        f'ROUTE_TABLE={int(transparent_proxy["tun_route_table"])}',
+        f'FWMARK={int(transparent_proxy["tun_fwmark"])}',
+        f'RULE_PRIORITY={int(transparent_proxy["tun_rule_priority"])}',
+        f'TUN_IFACE_CONFIG={shlex.quote(transparent_proxy["tun_interface"])}',
+        f'DNS_PORT={int(transparent_proxy["dns_hijack_port"])}',
+        "",
+        'detect_tun_iface() {',
+        '  if [ -n "$TUN_IFACE_CONFIG" ] && [ "$TUN_IFACE_CONFIG" != "auto" ]; then',
+        '    echo "$TUN_IFACE_CONFIG"',
+        "    return 0",
+        "  fi",
+        '  CANDIDATES="$($IP -o link show up 2>/dev/null | awk -F\': \' \'{print $2}\' | sed \'s/@.*//\' | grep -E \'^(adg|tun|tap|wg|utun)\' || true)"',
+        '  COUNT="$(printf "%s\\n" "$CANDIDATES" | awk \'NF {count += 1} END {print count + 0}\')"',
+        '  if [ "$COUNT" -eq 1 ]; then',
+        '    printf "%s\\n" "$CANDIDATES" | awk \'NF {print; exit}\'',
+        "    return 0",
+        "  fi",
+        '  CANDIDATES="$($IP -o addr show up scope global 2>/dev/null | awk \'{print $2}\' | sed \'s/@.*//\' | sort -u | grep -E \'^(adg|tun|tap|wg|utun)\' || true)"',
+        '  printf "%s\\n" "$CANDIDATES" | awk \'NF {print; exit}\'',
+        "}",
+        "",
+        'TUN_IFACE="$(detect_tun_iface)"',
+        'if [ -z "$TUN_IFACE" ]; then',
+        '  echo "Could not detect TUN interface. Set transparent_proxy.tun_interface explicitly." >&2',
+        "  exit 1",
+        "fi",
+        "",
+        '"$IPSET" create "$DEST_NET_SET" hash:net family inet -exist',
+        '"$IPSET" create "$DEST_DOMAIN_SET" hash:ip family inet -exist',
+        '"$IPSET" flush "$DEST_NET_SET"',
+        '"$IPSET" flush "$DEST_DOMAIN_SET"',
+    ]
+    for subnet in destination_subnets:
+        lines.append(f'"$IPSET" add "$DEST_NET_SET" {shlex.quote(subnet)} -exist')
+    lines.extend(
+        [
+            "",
+            '"$IPTABLES" -t mangle -N "$MANGLE_CHAIN" 2>/dev/null || true',
+            '"$IPTABLES" -t mangle -F "$MANGLE_CHAIN"',
+        ]
+    )
+    for subnet in bypass_subnets:
+        lines.append(f'"$IPTABLES" -t mangle -A "$MANGLE_CHAIN" -d {shlex.quote(subnet)} -j RETURN')
+    for subnet in target_subnets:
+        if destination_subnets:
+            lines.append(
+                f'"$IPTABLES" -t mangle -A "$MANGLE_CHAIN" -s {shlex.quote(subnet)} -p tcp -m set --match-set "$DEST_NET_SET" dst -j MARK --set-mark "$FWMARK"'
+            )
+            lines.append(
+                f'"$IPTABLES" -t mangle -A "$MANGLE_CHAIN" -s {shlex.quote(subnet)} -p udp -m set --match-set "$DEST_NET_SET" dst -j MARK --set-mark "$FWMARK"'
+            )
+        if destination_domains:
+            lines.append(
+                f'"$IPTABLES" -t mangle -A "$MANGLE_CHAIN" -s {shlex.quote(subnet)} -p tcp -m set --match-set "$DEST_DOMAIN_SET" dst -j MARK --set-mark "$FWMARK"'
+            )
+            lines.append(
+                f'"$IPTABLES" -t mangle -A "$MANGLE_CHAIN" -s {shlex.quote(subnet)} -p udp -m set --match-set "$DEST_DOMAIN_SET" dst -j MARK --set-mark "$FWMARK"'
+            )
+        if not selective_mode:
+            lines.append(
+                f'"$IPTABLES" -t mangle -A "$MANGLE_CHAIN" -s {shlex.quote(subnet)} -p tcp -j MARK --set-mark "$FWMARK"'
+            )
+            lines.append(
+                f'"$IPTABLES" -t mangle -A "$MANGLE_CHAIN" -s {shlex.quote(subnet)} -p udp -j MARK --set-mark "$FWMARK"'
+            )
+    lines.extend(
+        [
+            'if ! "$IPTABLES" -t mangle -C PREROUTING -j "$MANGLE_CHAIN" 2>/dev/null; then',
+            '  "$IPTABLES" -t mangle -A PREROUTING -j "$MANGLE_CHAIN"',
+            "fi",
+            "",
+        ]
+    )
+    if dns_hijack_enabled:
+        lines.extend(
+            [
+                '"$IPTABLES" -t nat -N "$DNS_CHAIN" 2>/dev/null || true',
+                '"$IPTABLES" -t nat -F "$DNS_CHAIN"',
+            ]
+        )
+        for subnet in target_subnets:
+            lines.append(
+                f'"$IPTABLES" -t nat -A "$DNS_CHAIN" -s {shlex.quote(subnet)} -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"'
+            )
+            lines.append(
+                f'"$IPTABLES" -t nat -A "$DNS_CHAIN" -s {shlex.quote(subnet)} -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"'
+            )
+        lines.extend(
+            [
+                'if ! "$IPTABLES" -t nat -C PREROUTING -j "$DNS_CHAIN" 2>/dev/null; then',
+                '  "$IPTABLES" -t nat -A PREROUTING -j "$DNS_CHAIN"',
+                "fi",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            '"$IP" route replace default dev "$TUN_IFACE" table "$ROUTE_TABLE"',
+            '"$IP" rule del priority "$RULE_PRIORITY" 2>/dev/null || true',
+            '"$IP" rule add fwmark "$FWMARK" priority "$RULE_PRIORITY" table "$ROUTE_TABLE"',
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def render_tun_policy_stop_script(config: dict[str, Any]) -> str:
+    transparent_proxy = config["transparent_proxy"]
+    return "\n".join(
+        [
+            "#!/opt/bin/sh",
+            "",
+            "set -eu",
+            "",
+            f'IP={shlex.quote(transparent_proxy["ip_path"])}',
+            f'IPTABLES={shlex.quote(transparent_proxy["iptables_path"])}',
+            f'IPSET={shlex.quote(transparent_proxy["ipset_path"])}',
+            f'MANGLE_CHAIN={shlex.quote(transparent_proxy["chain_name"])}',
+            f'DNS_CHAIN={shlex.quote(transparent_proxy["chain_name"] + "_DNS")}',
+            f'DEST_NET_SET={shlex.quote(transparent_proxy["destination_subnet_set"])}',
+            f'DEST_DOMAIN_SET={shlex.quote(transparent_proxy["destination_domain_set"])}',
+            f'ROUTE_TABLE={int(transparent_proxy["tun_route_table"])}',
+            f'FWMARK={int(transparent_proxy["tun_fwmark"])}',
+            f'RULE_PRIORITY={int(transparent_proxy["tun_rule_priority"])}',
+            "",
+            'while "$IPTABLES" -t mangle -C PREROUTING -j "$MANGLE_CHAIN" 2>/dev/null; do',
+            '  "$IPTABLES" -t mangle -D PREROUTING -j "$MANGLE_CHAIN"',
+            "done",
+            'while "$IPTABLES" -t nat -C PREROUTING -j "$DNS_CHAIN" 2>/dev/null; do',
+            '  "$IPTABLES" -t nat -D PREROUTING -j "$DNS_CHAIN"',
+            "done",
+            '"$IPTABLES" -t mangle -F "$MANGLE_CHAIN" 2>/dev/null || true',
+            '"$IPTABLES" -t mangle -X "$MANGLE_CHAIN" 2>/dev/null || true',
+            '"$IPTABLES" -t nat -F "$DNS_CHAIN" 2>/dev/null || true',
+            '"$IPTABLES" -t nat -X "$DNS_CHAIN" 2>/dev/null || true',
+            '"$IPSET" flush "$DEST_NET_SET" 2>/dev/null || true',
+            '"$IPSET" destroy "$DEST_NET_SET" 2>/dev/null || true',
+            '"$IPSET" flush "$DEST_DOMAIN_SET" 2>/dev/null || true',
+            '"$IPSET" destroy "$DEST_DOMAIN_SET" 2>/dev/null || true',
+            '"$IP" rule del priority "$RULE_PRIORITY" 2>/dev/null || true',
+            '"$IP" route flush table "$ROUTE_TABLE" 2>/dev/null || true',
+            "",
+        ]
+    )
+
+
 def render_redsocks_config(config: dict[str, Any], upstream: dict[str, Any]) -> str:
     transparent_proxy = config["transparent_proxy"]
     return "\n".join(
@@ -938,9 +1256,15 @@ def render_redsocks_config(config: dict[str, Any], upstream: dict[str, Any]) -> 
 
 
 def render_transparent_proxy_apply_script(config: dict[str, Any]) -> str:
+    if transparent_proxy_uses_tun(config):
+        return render_tun_policy_apply_script(config)
+
     transparent_proxy = config["transparent_proxy"]
     bypass_subnets = parse_csv_items(transparent_proxy["bypass_subnets"])
     target_subnets = parse_csv_items(transparent_proxy["target_subnets"])
+    destination_subnets = parse_csv_items(transparent_proxy.get("destination_subnets", ""))
+    destination_domains = parse_csv_items(transparent_proxy.get("destination_domains", ""))
+    selective_mode = bool(destination_subnets or destination_domains)
     return "\n".join(
         [
             "#!/opt/bin/sh",
@@ -948,10 +1272,13 @@ def render_transparent_proxy_apply_script(config: dict[str, Any]) -> str:
             "set -eu",
             "",
             f'IPTABLES={shlex.quote(transparent_proxy["iptables_path"])}',
+            f'IPSET={shlex.quote(transparent_proxy["ipset_path"])}',
             f'REDSOCKS_BIN={shlex.quote(transparent_proxy["redsocks_bin"])}',
             f'REDSOCKS_CONF={shlex.quote(str(resolve_local_path(transparent_proxy["redsocks_config_path"])))}',
             f'REDSOCKS_PID_FILE={shlex.quote(str(resolve_local_path(transparent_proxy["redsocks_pid_file"])))}',
             f'CHAIN={shlex.quote(transparent_proxy["chain_name"])}',
+            f'DEST_NET_SET={shlex.quote(transparent_proxy["destination_subnet_set"])}',
+            f'DEST_DOMAIN_SET={shlex.quote(transparent_proxy["destination_domain_set"])}',
             f'LISTEN_PORT={int(transparent_proxy["listen_port"])}',
             "",
             'stop_redsocks() {',
@@ -981,6 +1308,15 @@ def render_transparent_proxy_apply_script(config: dict[str, Any]) -> str:
             "  exit 1",
             "fi",
             "",
+            '"$IPSET" create "$DEST_NET_SET" hash:net family inet -exist',
+            '"$IPSET" create "$DEST_DOMAIN_SET" hash:ip family inet -exist',
+            '"$IPSET" flush "$DEST_NET_SET"',
+            '"$IPSET" flush "$DEST_DOMAIN_SET"',
+            *[
+                f'"$IPSET" add "$DEST_NET_SET" {shlex.quote(subnet)} -exist'
+                for subnet in destination_subnets
+            ],
+            "",
             '"$IPTABLES" -t nat -N "$CHAIN" 2>/dev/null || true',
             '"$IPTABLES" -t nat -F "$CHAIN"',
             "",
@@ -988,10 +1324,30 @@ def render_transparent_proxy_apply_script(config: dict[str, Any]) -> str:
                 f'"$IPTABLES" -t nat -A "$CHAIN" -d {shlex.quote(subnet)} -j RETURN'
                 for subnet in bypass_subnets
             ],
-            *[
-                f'"$IPTABLES" -t nat -A "$CHAIN" -s {shlex.quote(subnet)} -p tcp -j REDIRECT --to-ports "$LISTEN_PORT"'
-                for subnet in target_subnets
-            ],
+            *(
+                [
+                    f'"$IPTABLES" -t nat -A "$CHAIN" -s {shlex.quote(subnet)} -p tcp -m set --match-set "$DEST_NET_SET" dst -j REDIRECT --to-ports "$LISTEN_PORT"'
+                    for subnet in target_subnets
+                ]
+                if destination_subnets
+                else []
+            ),
+            *(
+                [
+                    f'"$IPTABLES" -t nat -A "$CHAIN" -s {shlex.quote(subnet)} -p tcp -m set --match-set "$DEST_DOMAIN_SET" dst -j REDIRECT --to-ports "$LISTEN_PORT"'
+                    for subnet in target_subnets
+                ]
+                if destination_domains
+                else []
+            ),
+            *(
+                []
+                if selective_mode
+                else [
+                    f'"$IPTABLES" -t nat -A "$CHAIN" -s {shlex.quote(subnet)} -p tcp -j REDIRECT --to-ports "$LISTEN_PORT"'
+                    for subnet in target_subnets
+                ]
+            ),
             '"$IPTABLES" -t nat -A "$CHAIN" -p tcp -j RETURN',
             "",
             'if ! "$IPTABLES" -t nat -C PREROUTING -p tcp -j "$CHAIN" 2>/dev/null; then',
@@ -1003,6 +1359,9 @@ def render_transparent_proxy_apply_script(config: dict[str, Any]) -> str:
 
 
 def render_transparent_proxy_stop_script(config: dict[str, Any]) -> str:
+    if transparent_proxy_uses_tun(config):
+        return render_tun_policy_stop_script(config)
+
     transparent_proxy = config["transparent_proxy"]
     return "\n".join(
         [
@@ -1011,8 +1370,11 @@ def render_transparent_proxy_stop_script(config: dict[str, Any]) -> str:
             "set -eu",
             "",
             f'IPTABLES={shlex.quote(transparent_proxy["iptables_path"])}',
+            f'IPSET={shlex.quote(transparent_proxy["ipset_path"])}',
             f'REDSOCKS_PID_FILE={shlex.quote(str(resolve_local_path(transparent_proxy["redsocks_pid_file"])))}',
             f'CHAIN={shlex.quote(transparent_proxy["chain_name"])}',
+            f'DEST_NET_SET={shlex.quote(transparent_proxy["destination_subnet_set"])}',
+            f'DEST_DOMAIN_SET={shlex.quote(transparent_proxy["destination_domain_set"])}',
             "",
             'while "$IPTABLES" -t nat -C PREROUTING -p tcp -j "$CHAIN" 2>/dev/null; do',
             '  "$IPTABLES" -t nat -D PREROUTING -p tcp -j "$CHAIN"',
@@ -1020,6 +1382,10 @@ def render_transparent_proxy_stop_script(config: dict[str, Any]) -> str:
             "",
             '"$IPTABLES" -t nat -F "$CHAIN" 2>/dev/null || true',
             '"$IPTABLES" -t nat -X "$CHAIN" 2>/dev/null || true',
+            '"$IPSET" flush "$DEST_NET_SET" 2>/dev/null || true',
+            '"$IPSET" destroy "$DEST_NET_SET" 2>/dev/null || true',
+            '"$IPSET" flush "$DEST_DOMAIN_SET" 2>/dev/null || true',
+            '"$IPSET" destroy "$DEST_DOMAIN_SET" 2>/dev/null || true',
             "",
             'if [ -f "$REDSOCKS_PID_FILE" ]; then',
             '  PID="$(cat "$REDSOCKS_PID_FILE" 2>/dev/null || true)"',
@@ -1046,21 +1412,56 @@ def generate_transparent_proxy_artifacts(
     vpn_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ensure_runtime_dirs(config)
-    upstream = resolve_transparent_proxy_upstream(config, vpn_status)
     transparent_proxy = config["transparent_proxy"]
     redsocks_conf_path = resolve_local_path(transparent_proxy["redsocks_config_path"])
+    dnsmasq_ipset_config_path = resolve_local_path(transparent_proxy["dnsmasq_ipset_config_path"])
     rules_script_path = resolve_local_path(transparent_proxy["rules_script_path"])
     stop_script_path = resolve_local_path(transparent_proxy["stop_script_path"])
+    dnsmasq_config_content = render_dnsmasq_ipset_config(config)
+    dnsmasq_config_existed_before = dnsmasq_ipset_config_path.exists()
+    dnsmasq_previous_content = ""
+    if dnsmasq_config_existed_before:
+        try:
+            dnsmasq_previous_content = dnsmasq_ipset_config_path.read_text(encoding="utf-8")
+        except OSError:
+            dnsmasq_previous_content = ""
 
-    write_text_file(redsocks_conf_path, render_redsocks_config(config, upstream))
+    upstream: dict[str, Any] | None = None
+    if transparent_proxy_uses_redsocks(config):
+        upstream = resolve_transparent_proxy_upstream(config, vpn_status)
+        write_text_file(redsocks_conf_path, render_redsocks_config(config, upstream))
+    else:
+        try:
+            if redsocks_conf_path.exists():
+                redsocks_conf_path.unlink()
+        except OSError:
+            pass
+    if dnsmasq_config_content:
+        write_text_file(dnsmasq_ipset_config_path, dnsmasq_config_content)
+    else:
+        try:
+            if dnsmasq_ipset_config_path.exists():
+                dnsmasq_ipset_config_path.unlink()
+        except OSError:
+            pass
     write_text_file(rules_script_path, render_transparent_proxy_apply_script(config), executable=True)
     write_text_file(stop_script_path, render_transparent_proxy_stop_script(config), executable=True)
     payload = {
         "generated_at": utc_now(),
         "upstream": upstream,
         "redsocks_config": str(redsocks_conf_path),
+        "mode": transparent_proxy["mode"],
+        "dnsmasq_ipset_config": str(dnsmasq_ipset_config_path),
+        "dnsmasq_ipset_config_exists": dnsmasq_ipset_config_path.exists(),
+        "dnsmasq_ipset_config_existed_before": dnsmasq_config_existed_before,
+        "dnsmasq_restart_required": dnsmasq_previous_content != dnsmasq_config_content,
         "apply_script": str(rules_script_path),
         "stop_script": str(stop_script_path),
+        "selective_targets": {
+            "destination_subnets": parse_csv_items(transparent_proxy.get("destination_subnets", "")),
+            "destination_domains": parse_csv_items(transparent_proxy.get("destination_domains", "")),
+            "enabled": has_selective_targets(config),
+        },
     }
     append_debug_log(config, "transparent_proxy.artifacts.generated", payload=payload)
     return payload
@@ -1068,17 +1469,28 @@ def generate_transparent_proxy_artifacts(
 
 def transparent_proxy_rule_installed(config: dict[str, Any]) -> bool:
     transparent_proxy = config["transparent_proxy"]
-    command = [
-        transparent_proxy["iptables_path"],
-        "-t",
-        "nat",
-        "-C",
-        "PREROUTING",
-        "-p",
-        "tcp",
-        "-j",
-        transparent_proxy["chain_name"],
-    ]
+    if transparent_proxy_uses_tun(config):
+        command = [
+            transparent_proxy["iptables_path"],
+            "-t",
+            "mangle",
+            "-C",
+            "PREROUTING",
+            "-j",
+            transparent_proxy["chain_name"],
+        ]
+    else:
+        command = [
+            transparent_proxy["iptables_path"],
+            "-t",
+            "nat",
+            "-C",
+            "PREROUTING",
+            "-p",
+            "tcp",
+            "-j",
+            transparent_proxy["chain_name"],
+        ]
     if not command_exists(command[0]):
         return False
     try:
@@ -1103,6 +1515,7 @@ def get_transparent_proxy_status(
     transparent_proxy = config["transparent_proxy"]
     pid_path = resolve_local_path(transparent_proxy["redsocks_pid_file"])
     config_path = resolve_local_path(transparent_proxy["redsocks_config_path"])
+    dnsmasq_ipset_config_path = resolve_local_path(transparent_proxy["dnsmasq_ipset_config_path"])
     apply_script = resolve_local_path(transparent_proxy["rules_script_path"])
     stop_script = resolve_local_path(transparent_proxy["stop_script_path"])
 
@@ -1118,24 +1531,53 @@ def get_transparent_proxy_status(
 
     upstream: dict[str, Any] | None = None
     upstream_error: str | None = None
-    try:
-        upstream = resolve_transparent_proxy_upstream(config, vpn_status)
-    except ValueError as exc:
-        upstream_error = str(exc)
+    if transparent_proxy_uses_redsocks(config):
+        try:
+            upstream = resolve_transparent_proxy_upstream(config, vpn_status)
+        except ValueError as exc:
+            upstream_error = str(exc)
 
     status = {
         "mode": transparent_proxy["mode"],
         "enabled": bool(transparent_proxy["enabled"]),
-        "available": command_exists(transparent_proxy["redsocks_bin"]) and command_exists(transparent_proxy["iptables_path"]),
+        "available": (
+            command_exists(transparent_proxy["redsocks_bin"])
+            and command_exists(transparent_proxy["iptables_path"])
+            and command_exists(transparent_proxy["ipset_path"])
+        )
+        if transparent_proxy_uses_redsocks(config)
+        else (
+            command_exists(transparent_proxy["ip_path"])
+            and command_exists(transparent_proxy["iptables_path"])
+            and command_exists(transparent_proxy["ipset_path"])
+        ),
         "running": running,
         "pid": pid,
-        "listener": f"{transparent_proxy['listen_ip']}:{transparent_proxy['listen_port']}",
+        "listener": (
+            f"{transparent_proxy['listen_ip']}:{transparent_proxy['listen_port']}"
+            if transparent_proxy_uses_redsocks(config)
+            else None
+        ),
         "chain_name": transparent_proxy["chain_name"],
         "target_subnets": parse_csv_items(transparent_proxy["target_subnets"]),
         "bypass_subnets": parse_csv_items(transparent_proxy["bypass_subnets"]),
+        "destination_subnets": parse_csv_items(transparent_proxy.get("destination_subnets", "")),
+        "destination_domains": parse_csv_items(transparent_proxy.get("destination_domains", "")),
+        "destination_subnet_set": transparent_proxy["destination_subnet_set"],
+        "destination_domain_set": transparent_proxy["destination_domain_set"],
+        "selective_enabled": has_selective_targets(config),
         "rules_installed": transparent_proxy_rule_installed(config),
         "redsocks_config_path": str(config_path),
         "redsocks_config_exists": config_path.exists(),
+        "dnsmasq_ipset_config_path": str(dnsmasq_ipset_config_path),
+        "dnsmasq_ipset_config_exists": dnsmasq_ipset_config_path.exists(),
+        "dnsmasq_restart_command": transparent_proxy.get("dnsmasq_restart_command", ""),
+        "tun_interface": transparent_proxy.get("tun_interface"),
+        "tun_route_table": transparent_proxy.get("tun_route_table"),
+        "tun_fwmark": transparent_proxy.get("tun_fwmark"),
+        "tun_rule_priority": transparent_proxy.get("tun_rule_priority"),
+        "dns_hijack_enabled": bool(transparent_proxy.get("dns_hijack_enabled", False)),
+        "dns_hijack_port": transparent_proxy.get("dns_hijack_port"),
         "apply_script_path": str(apply_script),
         "apply_script_exists": apply_script.exists(),
         "stop_script_path": str(stop_script),
@@ -1159,11 +1601,42 @@ def remember_transparent_proxy_action(config: dict[str, Any], payload: dict[str,
     return payload
 
 
+def maybe_restart_dnsmasq(
+    config: dict[str, Any],
+    *,
+    artifacts: dict[str, Any] | None,
+    event: str,
+) -> dict[str, Any] | None:
+    restart_required = bool((artifacts or {}).get("dnsmasq_restart_required"))
+    if not restart_required:
+        return None
+
+    command_text = str(config["transparent_proxy"].get("dnsmasq_restart_command", "")).strip()
+    if not command_text:
+        return {
+            "success": False,
+            "skipped": True,
+            "restart_required": True,
+            "message": "Сгенерирован dnsmasq ipset-конфиг. Для применения нужен перезапуск dnsmasq через transparent_proxy.dnsmasq_restart_command.",
+            "command": [],
+            "executed_at": utc_now(),
+        }
+
+    result = run_shell_text_command(
+        config,
+        command_text,
+        timeout=40,
+        event=event,
+    )
+    result["restart_required"] = True
+    return result
+
+
 def stop_transparent_proxy(config: dict[str, Any], *, reason: str) -> dict[str, Any]:
     pid_path = resolve_local_path(config["transparent_proxy"]["redsocks_pid_file"])
+    artifacts = generate_transparent_proxy_artifacts(config)
     if not command_exists(config["transparent_proxy"]["iptables_path"]) and not pid_path.exists():
-        status = get_transparent_proxy_status(config)
-        payload = {
+        result = {
             "success": True,
             "message": "Transparent proxy уже выключен.",
             "executed_at": utc_now(),
@@ -1171,24 +1644,25 @@ def stop_transparent_proxy(config: dict[str, Any], *, reason: str) -> dict[str, 
             "stderr": "",
             "returncode": 0,
             "command": [],
-            "reason": reason,
-            "artifacts": None,
-            "status": status,
         }
-        return remember_transparent_proxy_action(config, payload)
-
-    artifacts = generate_transparent_proxy_artifacts(config)
-    result = run_managed_command(
+    else:
+        result = run_managed_command(
+            config,
+            [artifacts["stop_script"]],
+            timeout=30,
+            event="transparent_proxy.stop",
+        )
+    dnsmasq_result = maybe_restart_dnsmasq(
         config,
-        [artifacts["stop_script"]],
-        timeout=30,
-        event="transparent_proxy.stop",
+        artifacts=artifacts,
+        event="transparent_proxy.dnsmasq_restart",
     )
     status = get_transparent_proxy_status(config)
     payload = {
         **result,
         "reason": reason,
         "artifacts": artifacts,
+        "dnsmasq": dnsmasq_result,
         "status": status,
         "message": (
             "Transparent proxy остановлен."
@@ -1196,6 +1670,18 @@ def stop_transparent_proxy(config: dict[str, Any], *, reason: str) -> dict[str, 
             else result.get("message", "Не удалось остановить transparent proxy.")
         ),
     }
+    if dnsmasq_result and dnsmasq_result.get("skipped"):
+        payload["message"] = (
+            f"{payload['message']} {dnsmasq_result.get('message')}"
+        ).strip()
+        payload["success"] = False
+    if dnsmasq_result and dnsmasq_result.get("success") is False and not dnsmasq_result.get("skipped"):
+        payload["message"] = (
+            f"{payload['message']} Перезапуск dnsmasq завершился с ошибкой."
+        ).strip()
+        payload["success"] = False
+        if payload.get("returncode") in (0, None):
+            payload["returncode"] = dnsmasq_result.get("returncode")
     return remember_transparent_proxy_action(config, payload)
 
 
@@ -1212,6 +1698,39 @@ def sync_transparent_proxy(
         payload = stop_transparent_proxy(config, reason=f"{reason}:vpn-disconnected")
         payload["message"] = "VPN не подключён, transparent proxy снят."
         return remember_transparent_proxy_action(config, payload)
+    if transparent_proxy_uses_tun(config) and "tun" not in str(status.get("mode") or "").lower():
+        payload = {
+            "success": False,
+            "message": "VPN подключён не в TUN mode. Переподключите VPN после выбора tun-policy.",
+            "executed_at": utc_now(),
+            "stdout": "",
+            "stderr": "Transport mismatch: expected TUN mode.",
+            "returncode": 1,
+            "command": [],
+            "reason": reason,
+            "vpn_status": status,
+            "status": get_transparent_proxy_status(config, status),
+        }
+        return remember_transparent_proxy_action(config, payload)
+    if transparent_proxy_uses_redsocks(config):
+        try:
+            upstream_check = resolve_transparent_proxy_upstream(config, status)
+        except ValueError:
+            upstream_check = None
+        if not status.get("listener") or not upstream_check or not upstream_check.get("host"):
+            payload = {
+                "success": False,
+                "message": "VPN подключён без SOCKS listener. Переподключите VPN после выбора transparent-redsocks.",
+                "executed_at": utc_now(),
+                "stdout": "",
+                "stderr": "Transport mismatch: expected SOCKS listener.",
+                "returncode": 1,
+                "command": [],
+                "reason": reason,
+                "vpn_status": status,
+                "status": get_transparent_proxy_status(config, status),
+            }
+            return remember_transparent_proxy_action(config, payload)
 
     artifacts = generate_transparent_proxy_artifacts(config, status)
     result = run_managed_command(
@@ -1220,11 +1739,17 @@ def sync_transparent_proxy(
         timeout=40,
         event="transparent_proxy.sync",
     )
+    dnsmasq_result = maybe_restart_dnsmasq(
+        config,
+        artifacts=artifacts,
+        event="transparent_proxy.dnsmasq_restart",
+    )
     proxy_status = get_transparent_proxy_status(config, status)
     payload = {
         **result,
         "reason": reason,
         "artifacts": artifacts,
+        "dnsmasq": dnsmasq_result,
         "vpn_status": status,
         "status": proxy_status,
         "message": (
@@ -1233,6 +1758,18 @@ def sync_transparent_proxy(
             else result.get("message", "Не удалось синхронизировать transparent proxy.")
         ),
     }
+    if dnsmasq_result and dnsmasq_result.get("skipped"):
+        payload["message"] = (
+            f"{payload['message']} {dnsmasq_result.get('message')}"
+        ).strip()
+        payload["success"] = False
+    if dnsmasq_result and dnsmasq_result.get("success") is False and not dnsmasq_result.get("skipped"):
+        payload["message"] = (
+            f"{payload['message']} Перезапуск dnsmasq завершился с ошибкой."
+        ).strip()
+        payload["success"] = False
+        if payload.get("returncode") in (0, None):
+            payload["returncode"] = dnsmasq_result.get("returncode")
     return remember_transparent_proxy_action(config, payload)
 
 
@@ -2093,6 +2630,25 @@ def connect_adguardvpn(config: dict[str, Any], location: str | None = None) -> d
     args = ["connect"]
     if location:
         args.extend(["-l", location])
+    transport = prepare_adguardvpn_transport(config)
+    if not transport.get("success"):
+        payload = {
+            "success": False,
+            "available": True,
+            "message": transport.get("message", "Не удалось подготовить transport mode."),
+            "executed_at": utc_now(),
+            "stdout": "",
+            "stderr": transport.get("message", ""),
+            "returncode": 1,
+            "command": [],
+            "location": location,
+            "transport": transport,
+            "status": get_adguardvpn_status(config, persist_last_good=False),
+            "transparent_proxy": get_transparent_proxy_status(config),
+        }
+        with STATE_LOCK:
+            STATE["last_cli_action"] = payload
+        return payload
     result = run_adguardvpn_cli(config, args)
     status = get_adguardvpn_status(config)
     if status.get("connected") and status.get("location"):
@@ -2101,6 +2657,7 @@ def connect_adguardvpn(config: dict[str, Any], location: str | None = None) -> d
     payload = {
         **result,
         "location": location,
+        "transport": transport,
         "status": status,
         "transparent_proxy": transparent_proxy,
     }

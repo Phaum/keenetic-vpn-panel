@@ -1,8 +1,8 @@
 # Keenetic VPN Panel
 
-Веб-панель для Keenetic и Entware, которая помогает проверять доступность нужного сайта, переключать локации AdGuard VPN и управлять этим через браузер без ручного редактирования shell-скриптов.
+Веб-панель для роутеров с Entware и локального Linux-окружения, которая управляет `adguardvpn-cli`, проверяет доступность ресурсов, переключает локации и умеет работать как автономный transport layer без ручной настройки маршрутов в веб-панели Keenetic.
 
-Проект рассчитан в первую очередь на запуск на роутере Keenetic с Entware, но его можно запускать и локально для настройки, отладки и разработки.
+Проект изначально ориентирован на Keenetic, но последние версии логики маршрутизации сделаны так, чтобы их можно было использовать и на других роутерах, где доступны `adguardvpn-cli`, `iptables`, `ipset`, `dnsmasq` и `ip`.
 
 ## Что умеет
 
@@ -10,87 +10,126 @@
 - вручную запускать ротацию локаций AdGuard VPN
 - автоматически проверять ресурс по расписанию и запускать ротацию при недоступности
 - напрямую управлять `adguardvpn-cli` из веб-интерфейса
-- поднимать автономный transparent proxy через `redsocks` и `iptables` без привязки к веб-панели Keenetic
-- показывать текущую локацию, последние действия и состояние панели
+- работать в трёх transport-режимах:
+  - `router-only`
+  - `transparent-redsocks`
+  - `tun-policy`
+- делать selective routing по:
+  - destination IP/CIDR
+  - доменам через `dnsmasq -> ipset -> iptables`
+- автоматически генерировать служебные shell-скрипты и runtime-конфиги
+- показывать состояние VPN, transport layer, автопроверки и последних действий
 - хранить основной лог и отдельный debug-лог
-- генерировать совместимый shell-wrapper для cron, init.d и ручного запуска
 - обновляться с GitHub прямо из панели
-- автоматически перезапускать веб-панель после успешного обновления
+- автоматически перезапускать сервис панели после успешного обновления
 
-## Как это работает
+## Режимы работы
 
-Логика проекта разделена на две части:
+### `router-only`
 
-- Python backend в [vpn_panel_server.py](/c:/files/keenetic/vpn/vpn_panel_server.py) выполняет проверки, ротацию, работу с `adguardvpn-cli`, автопроверку, обновление и API
-- веб-интерфейс в папке [web](/c:/files/keenetic/vpn/web) показывает состояние и даёт кнопки для управления
+Панель управляет только `adguardvpn-cli`.
 
-Если выбран режим `transparent_proxy.mode = "transparent-redsocks"`, backend дополнительно:
+Маршрутизация остаётся внешней:
 
-- генерирует `redsocks.conf` и shell-скрипты применения и снятия правил
-- поднимает `redsocks` поверх listener-а `adguardvpn-cli`
-- вешает `iptables`-правила в `nat/PREROUTING` для выбранных LAN-подсетей
-- синхронизирует этот слой при `connect`, `disconnect`, `rotate`, сохранении конфига и старте сервиса
+- либо через веб-панель роутера
+- либо через сторонние скрипты
+- либо через уже существующую сетевую конфигурацию
 
-Дополнительно проект генерирует shell-wrapper [generated/adguardvpn-rotate.sh](/c:/files/keenetic/vpn/generated/adguardvpn-rotate.sh), который можно использовать в старых сценариях, cron или init.d.
+Это режим совместимости со старой схемой.
 
-## Структура проекта
+### `transparent-redsocks`
 
-- [config.json](/c:/files/keenetic/vpn/config.json) — основной конфиг панели
-- [vpn_panel_server.py](/c:/files/keenetic/vpn/vpn_panel_server.py) — backend и HTTP API
-- [web/index.html](/c:/files/keenetic/vpn/web/index.html) — обзор и основные действия
-- [web/settings.html](/c:/files/keenetic/vpn/web/settings.html) — настройки
-- [web/logs.html](/c:/files/keenetic/vpn/web/logs.html) — просмотр логов
-- [web/script.html](/c:/files/keenetic/vpn/web/script.html) — просмотр shell-wrapper
-- [templates/adguardvpn_rotate.sh.tpl](/c:/files/keenetic/vpn/templates/adguardvpn_rotate.sh.tpl) — шаблон wrapper-скрипта
-- [deploy/entware/start_vpn_panel.sh](/c:/files/keenetic/vpn/deploy/entware/start_vpn_panel.sh) — старт панели для Entware
-- [deploy/entware/S99keenetic-vpn-panel](/c:/files/keenetic/vpn/deploy/entware/S99keenetic-vpn-panel) — init.d-скрипт
-- [install/install.sh](/c:/files/keenetic/vpn/install/install.sh) — установка с GitHub
-- [install/update.sh](/c:/files/keenetic/vpn/install/update.sh) — обновление
-- [install/uninstall.sh](/c:/files/keenetic/vpn/install/uninstall.sh) — удаление
+TCP-only режим.
 
-## Требования
+Панель:
 
-Для полноценной работы на роутере нужны:
+- переводит `adguardvpn-cli` в SOCKS mode
+- поднимает `redsocks`
+- вешает `iptables` NAT redirect
+- при необходимости ограничивает редирект только на выбранные destination CIDR и домены
+
+Подходит, если нужен прозрачный TCP-прокси поверх listener-а `adguardvpn-cli`.
+
+Ограничение:
+
+- UDP как транспорт через этот режим не проходит
+
+### `tun-policy`
+
+Основной автономный режим в актуальной версии проекта.
+
+Панель:
+
+- переводит `adguardvpn-cli` в `TUN` mode
+- ставит `set-tun-routing-mode NONE`
+- определяет TUN-интерфейс автоматически или использует явно заданный
+- создаёт policy routing через `ip rule` и `ip route`
+- маркирует трафик через `iptables mangle`
+- умеет selective routing по destination CIDR и доменам
+- может перехватывать DNS клиентов на локальный `dnsmasq`
+
+Это режим для полноценного TCP+UDP transport слоя без участия веб-панели роутера.
+
+## Как устроен проект
+
+Основная логика находится в [vpn_panel_server.py](/c:/files/keenetic/vpn/vpn_panel_server.py).
+
+Этот backend:
+
+- поднимает HTTP API
+- выполняет HTTP-проверки ресурса
+- запускает ротацию локаций
+- вызывает `adguardvpn-cli`
+- готовит transport mode
+- генерирует runtime-артефакты:
+  - `redsocks.conf`
+  - shell-скрипты apply/remove
+  - `dnsmasq` fragment для `ipset`
+- синхронизирует сетевой слой при:
+  - `connect`
+  - `disconnect`
+  - `rotate`
+  - сохранении конфига
+  - старте сервиса
+
+Веб-часть находится в папке [web](/c:/files/keenetic/vpn/web):
+
+- [web/index.html](/c:/files/keenetic/vpn/web/index.html)
+- [web/settings.html](/c:/files/keenetic/vpn/web/settings.html)
+- [web/logs.html](/c:/files/keenetic/vpn/web/logs.html)
+- [web/script.html](/c:/files/keenetic/vpn/web/script.html)
+- [web/app.js](/c:/files/keenetic/vpn/web/app.js)
+
+Панель также продолжает генерировать wrapper-скрипт [templates/adguardvpn_rotate.sh.tpl](/c:/files/keenetic/vpn/templates/adguardvpn_rotate.sh.tpl) для старых сценариев запуска.
+
+## Что требуется на роутере
+
+Для полноценной работы нужны:
 
 - `python3`
 - `adguardvpn-cli`
 - `redsocks`
 - `iptables`
+- `ipset`
+- `dnsmasq` с поддержкой `ipset`
+- рабочая команда `ip`
 - `ca-certificates`
-- файловая структура Entware с путями `/opt/...`
+- Entware-пути `/opt/...`
 
-Для локального запуска достаточно Python 3, но функции, завязанные на `adguardvpn-cli` и пути `/opt/...`, без роутерного окружения работать не будут или будут полезны только для интерфейсной отладки.
+Для локального запуска на обычной машине достаточно Python 3, но:
 
-## Быстрый старт локально
+- вызовы `adguardvpn-cli` без роутерного окружения не будут полноценно полезны
+- сетевые transport-режимы тоже имеют смысл только на Linux/роутере
 
-Запуск из каталога проекта:
+## Установка на Keenetic / Entware
 
-```powershell
-python vpn_panel_server.py
-```
-
-По умолчанию панель открывается по адресу:
-
-```text
-http://127.0.0.1:8088
-```
-
-Локальный запуск удобен для:
-
-- редактирования настроек
-- разработки интерфейса
-- проверки логики backend
-- генерации wrapper-скрипта
-
-## Быстрый старт на Keenetic
-
-Если Entware уже установлен, самый простой вариант — установка одной командой:
+Если Entware уже установлен, можно использовать установщик:
 
 ```sh
 /bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/master/install/install.sh)"
 ```
 
-Если на роутере нет `curl`:
+Если `curl` нет:
 
 ```sh
 /bin/sh -c "$(wget -O- https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/master/install/install.sh)"
@@ -101,280 +140,158 @@ http://127.0.0.1:8088
 - обновляет `opkg`
 - ставит зависимости
 - скачивает проект в `/opt/share/keenetic-vpn-panel`
-- настраивает `config.json`
-- пытается найти свободный порт
-- устанавливает автозапуск панели
-- запускает сервис
+- восстанавливает или нормализует `config.json`
+- выбирает свободный порт панели
+- настраивает автозапуск
+- пытается включить zero-touch transport-конфигурацию для fresh install
 
-При установке через Entware дополнительно ставится пакет `redsocks`.
+При установке он также:
 
-После установки может понадобиться вход в аккаунт AdGuard VPN:
+- ставит `redsocks`
+- ставит `ipset`
+- пытается поставить пакет с командой `ip`
+- пытается определить путь для `dnsmasq` fragment
+- пытается определить команду перезапуска `dnsmasq`
+- для новой установки ориентируется на `tun-policy`
+
+После установки почти наверняка потребуется логин в AdGuard VPN:
 
 ```sh
 HOME=/opt/home/admin adguardvpn-cli login
 ```
 
-## Ручной запуск на роутере
+### Что означает “из коробки”
 
-Если не используете установщик, можно поднять панель вручную:
+В актуальной версии это значит:
 
-```sh
-cd /opt/share/keenetic-vpn-panel
-/opt/bin/python3 vpn_panel_server.py
+- проект сам готовит transport-конфиг
+- сам генерирует `dnsmasq` fragment
+- сам переключает `adguardvpn-cli` transport mode
+- сам поднимает и снимает сетевой слой при операциях VPN
+
+Но всё ещё остаются аппаратно-зависимые места:
+
+- автоматическое определение TUN-интерфейса
+- конкретный init script `dnsmasq`
+- наличие нужных модулей `iptables` и `ipset` в системе
+
+Если роутер сильно отличается от типичного Entware-окружения, может потребоваться руками уточнить:
+
+- `transparent_proxy.tun_interface`
+- `transparent_proxy.dnsmasq_restart_command`
+- `transparent_proxy.dnsmasq_ipset_config_path`
+
+## Локальный запуск
+
+Для отладки интерфейса и backend-логики:
+
+```powershell
+python vpn_panel_server.py
 ```
 
-Чтобы панель была доступна из локальной сети, в [config.json](/c:/files/keenetic/vpn/config.json) обычно указывают:
+По умолчанию панель открывается на:
 
-```json
-"panel": {
-  "host": "0.0.0.0",
-  "port": 8088
-}
+```text
+http://127.0.0.1:8088
 ```
 
-После этого панель будет доступна по адресу вида `http://192.168.1.1:8088`.
-
-## Основные страницы интерфейса
+## Страницы панели
 
 ### Обзор
 
-Страница обзора показывает:
+Показывает:
 
-- результат последней проверки
-- результат последней ротации
-- состояние автоматического режима
-- текущую локацию VPN
-- кнопки ручной проверки и обновления
+- последнюю проверку
+- последнюю ротацию
+- состояние автопроверки
+- состояние VPN
+- состояние transport layer
 
 ### Параметры
 
-На странице настроек можно:
+Позволяет:
 
-- менять URL и ожидаемый текст для проверки
-- включать и выключать автоматический режим
-- задавать интервал автопроверки
-- настраивать `adguardvpn-cli`
-- включать автономный `transparent proxy` через `redsocks`
-- применять и удалять автозапуск панели как сервиса
+- редактировать основной конфиг
+- переключать transport mode
+- задавать LAN-подсети клиентов
+- задавать selective routing по CIDR и доменам
+- управлять автозапуском
 - включать debug-лог
 
 ### Логи
 
-Показываются:
+Показывает:
 
 - основной лог ротации
-- debug-лог, если он включён
+- debug-лог
 
 ### Авто исполнитель
 
-На этой странице можно посмотреть сгенерированный shell-wrapper, который остаётся совместимым с shell-сценариями и ручным запуском.
+Показывает сгенерированный wrapper-скрипт для старых shell-сценариев.
 
-## Основные сценарии использования
+## Selective routing
 
-### 1. Проверить ресурс вручную
+Проект умеет работать в двух вариантах:
 
-Нажмите `Проверить ресурс`.
+### Full routing
 
-Панель выполнит HTTP-проверку через Python и покажет результат в интерфейсе.
+Если `destination_subnets` и `destination_domains` пустые, то весь трафик клиентов из `target_subnets` уходит через выбранный transport mode.
 
-### 2. Переключить локацию вручную
+### Selective routing
 
-Нажмите `Запустить переключение`.
+Если заполнен хотя бы один список:
 
-Панель:
+- `transparent_proxy.destination_subnets`
+- `transparent_proxy.destination_domains`
 
-- проверит ресурс
-- если доступ есть, ничего переключать не будет
-- если доступа нет, начнёт ротацию локаций
-- сначала попробует последнюю удачную локацию
-- затем переберёт доступные локации
-- в конце попробует `quick connect`, если обычный перебор не помог
+то в VPN уходит только трафик к этим назначениям.
 
-### 3. Включить автоматический режим
+### Маршрутизация по доменам
 
-В настройках выберите:
+Для доменов используется цепочка:
 
-- `automation.enabled`
-- задайте `automation.check_interval`
+`dnsmasq -> ipset -> iptables`
 
-После этого запущенная панель будет сама выполнять проверки через заданный интервал.
-Если ресурс недоступен, она автоматически запустит ротацию.
+Это означает:
 
-### 4. Включить автономный transparent proxy
-
-В настройках включите:
-
-- `transparent_proxy.mode = "transparent-redsocks"`
-- задайте LAN-подсети в `transparent_proxy.target_subnets`
-- при необходимости скорректируйте `transparent_proxy.listen_port`
-
-После этого панель будет поднимать `redsocks` и применять `iptables`-правила сама.
-Этот режим работает без ручной настройки маршрутов через веб-панель Keenetic и подходит для других роутеров, где доступны `adguardvpn-cli`, `redsocks` и `iptables`.
-
-## Ключевые разделы конфига
-
-### `panel`
-
-Параметры самой веб-панели:
-
-- `host`
-- `port`
-- `generated_script`
-
-### `vpn`
-
-Настройки проверки ресурса и логики ротации:
-
-- `test_url`
-- `expected_text`
-- `timeout`
-- `check_retries`
-- `check_retry_delay`
-- `switch_delay`
-- `top_count`
-
-### `adguardvpn`
-
-Настройки CLI:
-
-- `cli_command`
-- `command_timeout`
-- `locations_limit`
-
-### `automation`
-
-Настройки фоновой автопроверки:
-
-```json
-"automation": {
-  "enabled": false,
-  "check_interval": 600
-}
-```
-
-- `enabled` — включает фоновую автопроверку
-- `check_interval` — интервал между проверками в секундах
-
-### `transparent_proxy`
-
-Настройки автономного прозрачного TCP-проксирования:
-
-- `enabled`
-- `mode`
-- `proxy_type`
-- `proxy_host`
-- `proxy_port`
-- `listen_ip`
-- `listen_port`
-- `redsocks_bin`
-- `redsocks_pid_file`
-- `redsocks_config_path`
-- `iptables_path`
-- `chain_name`
-- `target_subnets`
-- `bypass_subnets`
-- `rules_script_path`
-- `stop_script_path`
+- панель генерирует `dnsmasq`-fragment с правилами `ipset`
+- `dnsmasq` складывает IP-адреса доменов в `ipset`
+- `iptables` применяет правила только к IP из этого `ipset`
 
 Важно:
 
-- сейчас transparent proxy покрывает только TCP-трафик
-- UDP и DNS в этот слой не входят
-- `target_subnets` должны содержать LAN-подсети клиентов, чей трафик нужно прозрачно отправлять в VPN
+- это не “магическая” маршрутизация по строке домена в пакетах
+- домен сначала должен быть реально разрешён через тот `dnsmasq`, который читает сгенерированный fragment
 
-### `autostart`
+## DNS и UDP
 
-Настройки запуска панели как сервиса Entware:
+### В `transparent-redsocks`
 
-- `enabled`
-- `service_name`
-- `app_dir`
-- `python_bin`
-- `log_file`
-- `pid_file`
-- `start_script_path`
-- `init_script_path`
+- TCP поддерживается
+- UDP как transport не поддерживается
+- домены можно использовать как селектор для TCP-правил
 
-Важно:
+### В `tun-policy`
 
-- `autostart` отвечает за запуск самой панели после перезагрузки
-- `automation` отвечает за фоновые проверки внутри уже работающей панели
+- TCP и UDP маршрутизируются через TUN
+- может включаться DNS hijack для клиентов
+- доменные selective-правила остаются через `dnsmasq/ipset`
 
-### `logging`
+Именно `tun-policy` является актуальным режимом для полноценной UDP/DNS-схемы.
 
-Настройки debug-лога:
+## CLI-команды
 
-```json
-"logging": {
-  "debug_enabled": false,
-  "debug_log_file": "/opt/var/log/adguardvpn-rotate.debug.log",
-  "debug_max_bytes": 262144,
-  "debug_backup_count": 2
-}
-```
-
-Если `debug_enabled = true`, панель пишет подробную трассировку:
-
-- старт и завершение ротации
-- HTTP-проверки по попыткам
-- вызовы `adguardvpn-cli`
-- события `transparent_proxy.*`
-- работу lock-файла
-- выбор локаций и fallback-сценарии
-
-## Логи
-
-По умолчанию используются такие файлы:
-
-- основной лог: `/opt/var/log/adguardvpn-rotate.log`
-- debug-лог: `/opt/var/log/adguardvpn-rotate.debug.log`
-- лог самой панели: `/opt/var/log/keenetic-vpn-panel.log`
-
-Если что-то работает не так, обычно стоит смотреть в таком порядке:
-
-1. лог панели
-2. основной лог ротации
-3. debug-лог
-
-Пример команды:
+Помимо запуска веб-панели, backend поддерживает:
 
 ```sh
-tail -n 60 /opt/var/log/keenetic-vpn-panel.log
+/opt/bin/python3 vpn_panel_server.py rotate
+/opt/bin/python3 vpn_panel_server.py sync-transparent-proxy
+/opt/bin/python3 vpn_panel_server.py stop-transparent-proxy
 ```
 
-## Обновление
+## Автозапуск
 
-Обновить проект можно двумя способами.
-
-Через веб-интерфейс:
-
-- кнопка `Обновить с GitHub`
-
-Через консоль:
-
-```sh
-/bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/master/install/update.sh)"
-```
-
-После успешного обновления панель автоматически перезапускается.
-
-Во время обновления скрипт старается:
-
-- сохранить текущий `config.json`
-- наложить пользовательские настройки поверх нового дефолтного конфига
-- восстановить рабочий JSON даже если файл был частично повреждён
-
-## Удаление
-
-```sh
-/bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/master/install/uninstall.sh)"
-```
-
-## Автозапуск панели как сервиса
-
-Если панель установлена на роутере, она может запускаться через init.d.
-
-Используются файлы:
+На Entware используются:
 
 - [deploy/entware/start_vpn_panel.sh](/c:/files/keenetic/vpn/deploy/entware/start_vpn_panel.sh)
 - [deploy/entware/S99keenetic-vpn-panel](/c:/files/keenetic/vpn/deploy/entware/S99keenetic-vpn-panel)
@@ -388,22 +305,179 @@ tail -n 60 /opt/var/log/keenetic-vpn-panel.log
 /opt/etc/init.d/S99keenetic-vpn-panel status
 ```
 
-Этими же настройками можно управлять из веб-панели на странице параметров.
+## Обновление
 
-Дополнительные CLI-команды:
+Через веб-интерфейс:
+
+- кнопка `Обновить с GitHub`
+
+Через консоль:
 
 ```sh
-/opt/bin/python3 vpn_panel_server.py sync-transparent-proxy
-/opt/bin/python3 vpn_panel_server.py stop-transparent-proxy
+/bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/master/install/update.sh)"
 ```
 
-## Что важно учитывать
+После успешного обновления панель автоматически перезапускается.
 
-- Не публикуйте панель в интернет без дополнительной защиты.
-- Для домашнего использования обычно достаточно LAN-доступа.
-- Если не нужен доступ со всех интерфейсов, вместо `0.0.0.0` лучше указать конкретный LAN IP роутера.
-- На слабых моделях роутеров лучше не ставить слишком частую автопроверку.
-- Проверка зависит не только от доступности сайта, но и от совпадения `expected_text`.
+## Удаление
+
+```sh
+/bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/master/install/uninstall.sh)"
+```
+
+## Основные разделы `config.json`
+
+### `panel`
+
+Настройки самой панели:
+
+- `host`
+- `port`
+- `script_runner`
+- `source_script`
+- `generated_script`
+
+### `vpn`
+
+Параметры проверки и ротации:
+
+- `test_url`
+- `expected_text`
+- `top_count`
+- `timeout`
+- `connect_timeout`
+- `check_retries`
+- `check_retry_delay`
+- `switch_delay`
+
+### `adguardvpn`
+
+Настройки CLI:
+
+- `cli_command`
+- `command_timeout`
+- `locations_limit`
+
+### `automation`
+
+Фоновая проверка:
+
+- `enabled`
+- `check_interval`
+
+### `transparent_proxy`
+
+Главный блок transport layer.
+
+Ключевые поля:
+
+- `mode`
+- `proxy_type`
+- `proxy_host`
+- `proxy_port`
+- `listen_ip`
+- `listen_port`
+- `redsocks_bin`
+- `redsocks_pid_file`
+- `redsocks_config_path`
+- `iptables_path`
+- `ipset_path`
+- `ip_path`
+- `chain_name`
+- `target_subnets`
+- `bypass_subnets`
+- `destination_subnets`
+- `destination_domains`
+- `destination_subnet_set`
+- `destination_domain_set`
+- `dnsmasq_ipset_config_path`
+- `dnsmasq_restart_command`
+- `tun_interface`
+- `tun_route_table`
+- `tun_fwmark`
+- `tun_rule_priority`
+- `dns_hijack_enabled`
+- `dns_hijack_port`
+- `rules_script_path`
+- `stop_script_path`
+
+Практический смысл:
+
+- `target_subnets` — какие клиенты или LAN-сегменты вообще участвуют в проксировании
+- `destination_subnets` — какие destination CIDR нужно отправлять в VPN
+- `destination_domains` — какие домены нужно отправлять в VPN через `dnsmasq/ipset`
+- `bypass_subnets` — какие сети нельзя трогать
+
+### `autostart`
+
+Параметры запуска панели как сервиса:
+
+- `enabled`
+- `service_name`
+- `app_dir`
+- `python_bin`
+- `log_file`
+- `pid_file`
+- `start_script_path`
+- `init_script_path`
+
+### `paths`
+
+Служебные runtime-файлы:
+
+- `lock_file`
+- `log_file`
+- `good_file`
+- `tmp_file`
+- `body_file`
+
+### `logging`
+
+Debug-лог:
+
+- `debug_enabled`
+- `debug_log_file`
+- `debug_max_bytes`
+- `debug_backup_count`
+
+### `resources`
+
+Ссылки в боковом меню.
+
+Это обычные `http/https` URL, поэтому можно указывать:
+
+- доменные адреса
+- IP-адреса
+
+## Логи
+
+По умолчанию используются:
+
+- `/opt/var/log/adguardvpn-rotate.log`
+- `/opt/var/log/adguardvpn-rotate.debug.log`
+- `/opt/var/log/keenetic-vpn-panel.log`
+
+Если что-то идёт не так, обычно полезно смотреть в таком порядке:
+
+1. лог панели
+2. основной лог ротации
+3. debug-лог
+
+Пример:
+
+```sh
+tail -n 60 /opt/var/log/keenetic-vpn-panel.log
+```
+
+## Ограничения и важные замечания
+
+- `transparent-redsocks` — это TCP-only режим
+- доменная маршрутизация зависит от реально используемого `dnsmasq`
+- `dnsmasq_ipset_config_path` должен попадать в конфиг, который `dnsmasq` действительно читает
+- для доменных правил после изменения конфигурации нужен реальный restart `dnsmasq`, а не просто абстрактный “reload”
+- автоопределение TUN-интерфейса сделано эвристически
+- если на роутере нет нужных netfilter-модулей, selective routing работать не будет
+- панель не стоит публиковать в интернет без дополнительной защиты
 
 ## Типичные проблемы
 
@@ -412,44 +486,42 @@ tail -n 60 /opt/var/log/keenetic-vpn-panel.log
 Проверьте:
 
 - установлен ли `adguardvpn-cli`
-- выполнен ли вход через `adguardvpn-cli login`
+- выполнен ли `adguardvpn-cli login`
 - доступны ли пути `/opt/...`
 
-### Автоматический режим включён, но ничего не происходит
+### `tun-policy` включён, но трафик не идёт через VPN
 
 Проверьте:
 
-- что сама панель запущена
-- что `automation.enabled = true`
-- что интервал не слишком большой
-- что в логах нет ошибок HTTP-проверки или вызова CLI
+- что `adguardvpn-cli` действительно в `TUN` mode
+- что TUN-интерфейс найден автоматически или явно задан
+- что доступны `ip`, `iptables`, `ipset`
+- что policy routing не конфликтует с другой сетевой логикой роутера
 
-### Transparent proxy включён, но клиенты не идут через VPN
+### Доменные selective-правила не работают
 
 Проверьте:
 
-- установлен ли `redsocks`
-- существует ли `iptables`
-- что `transparent_proxy.target_subnets` совпадает с реальными LAN-подсетями
-- что `adguardvpn-cli status` показывает рабочий listener
-- что в debug-логе нет ошибок `transparent_proxy.sync`
+- что `destination_domains` заполнен корректно
+- что `dnsmasq_ipset_config_path` лежит в реально загружаемом `conf-dir`
+- что `dnsmasq_restart_command` корректен
+- что клиенты действительно резолвят DNS через этот `dnsmasq`
+
+### `transparent-redsocks` включён, но ничего не проксируется
+
+Проверьте:
+
+- что `adguardvpn-cli` подключён в SOCKS mode
+- что есть listener в `adguardvpn-cli status`
+- что `redsocks` установлен
+- что `target_subnets` совпадает с реальными LAN-подсетями
 
 ### Debug-лог не появляется
 
 Проверьте:
 
 - что `logging.debug_enabled = true`
-- что процесс панели может писать в каталог `/opt/var/log`
-
-### После обновления панель не поднялась
-
-Смотрите лог панели:
-
-```sh
-tail -n 60 /opt/var/log/keenetic-vpn-panel.log
-```
-
-Также имеет смысл проверить, существует ли init.d-скрипт и корректны ли пути в секции `autostart`.
+- что процесс панели может писать в `/opt/var/log`
 
 ## Репозиторий
 
