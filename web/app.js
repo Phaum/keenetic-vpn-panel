@@ -860,6 +860,24 @@ async function runProjectUpdateFlow(setMessage) {
   return result;
 }
 
+async function runPanelRestartFlow(setMessage) {
+  setMessage("Планирую перезагрузку панели...");
+  const result = await fetchJson("/api/actions/restart-panel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ delay_seconds: 2 }),
+  });
+  setMessage(JSON.stringify(result, null, 2));
+
+  if (result.restart_scheduled) {
+    waitForPanelAndReload((result.restart_delay_seconds || 2) + 2);
+    return result;
+  }
+
+  await Promise.all([loadState(), loadLogs(), loadScript(), loadVpnStatus(), loadAutostartStatus(), loadTransparentProxyStatus()]);
+  return result;
+}
+
 function bindClick(id, handler) {
   const element = byId(id);
   if (element) {
@@ -947,6 +965,14 @@ function bindActions() {
   bindClick("update-project", async () => {
     try {
       await runProjectUpdateFlow(setStatusMessage);
+    } catch (error) {
+      setStatusMessage(error.message);
+    }
+  });
+
+  bindClick("restart-panel", async () => {
+    try {
+      await runPanelRestartFlow(setStatusMessage);
     } catch (error) {
       setStatusMessage(error.message);
     }
@@ -1150,6 +1176,14 @@ function bindActions() {
   bindClick("project-update", async () => {
     try {
       await runProjectUpdateFlow(setAutostartMessage);
+    } catch (error) {
+      setAutostartMessage(error.message);
+    }
+  });
+
+  bindClick("restart-panel-settings", async () => {
+    try {
+      await runPanelRestartFlow(setAutostartMessage);
     } catch (error) {
       setAutostartMessage(error.message);
     }

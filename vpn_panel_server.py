@@ -3059,6 +3059,27 @@ def schedule_panel_restart_after_update(config: dict[str, Any], delay_seconds: i
     return schedule_process_restart(config, delay_seconds)
 
 
+def restart_panel(config: dict[str, Any], delay_seconds: int = 2) -> dict[str, Any]:
+    with ACTION_LOCK:
+        append_debug_log(config, "panel_restart.requested", delay_seconds=delay_seconds)
+        restart_info = schedule_panel_restart_after_update(config, delay_seconds)
+        result = {
+            "success": bool(restart_info.get("scheduled")),
+            "message": (
+                f"Перезапуск панели запланирован через {restart_info.get('delay_seconds', delay_seconds)} сек."
+                if restart_info.get("scheduled")
+                else "Не удалось запланировать перезапуск панели."
+            ),
+            "executed_at": utc_now(),
+            "restart_scheduled": bool(restart_info.get("scheduled")),
+            "restart_method": restart_info.get("method"),
+            "restart_delay_seconds": restart_info.get("delay_seconds"),
+            "restart_command": restart_info.get("command"),
+        }
+        append_debug_log(config, "panel_restart.scheduled", restart=restart_info, result=result)
+        return result
+
+
 def run_project_update(config: dict[str, Any]) -> dict[str, Any]:
     with ACTION_LOCK:
         update_script = (BASE_DIR / "install" / "update.sh").resolve()
@@ -3367,6 +3388,9 @@ class PanelHandler(BaseHTTPRequestHandler):
                 return self.send_json(remove_autostart(load_config(), stop_now=stop_now))
             if self.path == "/api/actions/update-project":
                 return self.send_json(run_project_update(load_config()))
+            if self.path == "/api/actions/restart-panel":
+                delay_seconds = max(1, int(body.get("delay_seconds", 2) or 2))
+                return self.send_json(restart_panel(load_config(), delay_seconds=delay_seconds))
 
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
         except ValueError as exc:
