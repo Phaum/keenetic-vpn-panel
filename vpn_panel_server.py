@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
+ASSETS_DIR = BASE_DIR / "assets"
 TEMPLATE_PATH = BASE_DIR / "templates" / "adguardvpn_rotate.sh.tpl"
 CONFIG_PATH = BASE_DIR / "config.json"
 
@@ -2106,6 +2107,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 return self.serve_static("styles.css", "text/css; charset=utf-8")
             if self.path == "/app.js":
                 return self.serve_static("app.js", "application/javascript; charset=utf-8")
+            if self.path == "/assets/logo.ico":
+                return self.serve_asset("logo.ico", "image/x-icon")
             if self.path == "/api/config":
                 return self.send_json(load_config())
             if self.path == "/api/state":
@@ -2205,6 +2208,16 @@ class PanelHandler(BaseHTTPRequestHandler):
 
     def serve_static(self, filename: str, content_type: str) -> None:
         path = WEB_DIR / filename
+        if not path.exists():
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.end_headers()
+        self.wfile.write(path.read_bytes())
+
+    def serve_asset(self, filename: str, content_type: str) -> None:
+        path = ASSETS_DIR / filename
         if not path.exists():
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
