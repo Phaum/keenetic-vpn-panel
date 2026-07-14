@@ -4,7 +4,7 @@ set -eu
 
 REPO_OWNER="${REPO_OWNER:-Phaum}"
 REPO_NAME="${REPO_NAME:-keenetic-vpn-panel}"
-BRANCH="${BRANCH:-master}"
+BRANCH="${BRANCH:-go-version}"
 APP_ROOT="${APP_ROOT:-/opt/share/keenetic-vpn-panel}"
 APP_DIR="${APP_DIR:-${APP_ROOT}/go}"
 OLD_APP_DIR="${OLD_APP_DIR:-${APP_ROOT}/python}"

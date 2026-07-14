@@ -18,7 +18,7 @@ go build -trimpath -ldflags="-s -w" -o keenetic-vpn-panel .
 Стабильная установка из GitHub Release:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/master/go/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/go-version/go/install/install.sh | sh
 ```
 
 Установщик автоматически различает:
@@ -81,7 +81,7 @@ sh install/install-adguardvpn-cli.sh
 ```
 
 В панели кнопка «Проверить обновления» сравнивает текущую сборку панели с
-веткой `master`, а установленный `adguardvpn-cli` — с последним стабильным
+веткой `go-version`, а установленный `adguardvpn-cli` — с последним стабильным
 релизом AdGuardVPNCLI.
 
 ## Режимы маршрутизации

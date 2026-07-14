@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	panelRepoAPI     = "https://api.github.com/repos/Phaum/keenetic-vpn-panel/commits/master"
+	panelRepoAPI     = "https://api.github.com/repos/Phaum/keenetic-vpn-panel/commits/go-version"
 	cliReleaseAPI    = "https://api.github.com/repos/AdguardTeam/AdGuardVPNCLI/releases/latest"
 	pinnedCLIVersion = "1.7.12"
 )

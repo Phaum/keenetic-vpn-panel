@@ -57,7 +57,7 @@ Python-версия больше не является основной и на�
 Требуется Go 1.22 или новее. Внешних Go-модулей у проекта нет.
 
 ```sh
-git clone https://github.com/Phaum/keenetic-vpn-panel.git
+git clone --branch go-version --single-branch https://github.com/Phaum/keenetic-vpn-panel.git
 cd keenetic-vpn-panel/go
 go test ./...
 go build -trimpath -ldflags="-s -w" -o keenetic-vpn-panel .
@@ -101,13 +101,13 @@ go run .
 Требуется установленный Entware с доступными `/opt` и `opkg`.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/master/go/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/go-version/go/install/install.sh | sh
 ```
 
 Если `curl` отсутствует:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/master/go/install/install.sh | sh
+wget -qO- https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/go-version/go/install/install.sh | sh
 ```
 
 Установщик:
