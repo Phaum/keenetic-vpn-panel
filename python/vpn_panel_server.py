@@ -23,8 +23,9 @@ from urllib.parse import parse_qs, urlparse
 
 
 BASE_DIR = Path(__file__).resolve().parent
-WEB_DIR = BASE_DIR / "web"
-ASSETS_DIR = BASE_DIR / "assets"
+PROJECT_DIR = BASE_DIR.parent
+WEB_DIR = PROJECT_DIR / "web"
+ASSETS_DIR = PROJECT_DIR / "assets"
 TEMPLATE_PATH = BASE_DIR / "templates" / "adguardvpn_rotate.sh.tpl"
 CONFIG_PATH = BASE_DIR / "config.json"
 
@@ -58,11 +59,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "autostart": {
         "enabled": False,
         "service_name": "keenetic-vpn-panel",
-        "app_dir": "/opt/share/keenetic-vpn-panel",
+        "app_dir": "/opt/share/keenetic-vpn-panel/python",
         "python_bin": "/opt/bin/python3",
         "log_file": "/opt/var/log/keenetic-vpn-panel.log",
         "pid_file": "/opt/var/run/keenetic-vpn-panel.pid",
-        "start_script_path": "/opt/share/keenetic-vpn-panel/deploy/entware/start_vpn_panel.sh",
+        "start_script_path": "/opt/share/keenetic-vpn-panel/python/deploy/entware/start_vpn_panel.sh",
         "init_script_path": "/opt/etc/init.d/S99keenetic-vpn-panel",
     },
     "transparent_proxy": {

@@ -1,7 +1,7 @@
 #!/opt/bin/sh
 
 NAME="keenetic-vpn-panel"
-APP_DIR="/opt/share/keenetic-vpn-panel"
+APP_DIR="/opt/share/keenetic-vpn-panel/python"
 START_SCRIPT="$APP_DIR/deploy/entware/start_vpn_panel.sh"
 PID_FILE="/opt/var/run/${NAME}.pid"
 LOG_FILE="/opt/var/log/keenetic-vpn-panel.log"

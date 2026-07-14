@@ -2,7 +2,7 @@
 
 set -eu
 
-APP_DIR="${APP_DIR:-/opt/share/keenetic-vpn-panel}"
+APP_DIR="${APP_DIR:-/opt/share/keenetic-vpn-panel/python}"
 INIT_SCRIPT_PATH="${INIT_SCRIPT_PATH:-/opt/etc/init.d/S99keenetic-vpn-panel}"
 
 if [ -x "$INIT_SCRIPT_PATH" ]; then

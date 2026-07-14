@@ -1,0 +1,13 @@
+{
+  "version": "1.7.12",
+  "tag": "v1.7.12-release",
+  "source": "https://github.com/AdguardTeam/AdGuardVPNCLI/releases/tag/v1.7.12-release",
+  "license_notice": "AdGuard VPN CLI is not open source. Download and use are governed by AdGuard's terms.",
+  "assets": {
+    "linux-amd64": {"archive": "adguardvpn-cli-1.7.12-linux-x86_64.tar.gz", "sha256": "a706933c87ec88eec8578cce96d2b91c385e083cf738a806e69b3bcd877fb88c", "size": 5933218},
+    "linux-arm64": {"archive": "adguardvpn-cli-1.7.12-linux-aarch64.tar.gz", "sha256": "872fcd81ec41f952001c567abd2e61564773ccdcf5be246afd047f3d3eb4ee0b", "size": 5516790},
+    "linux-armv7": {"archive": "adguardvpn-cli-1.7.12-linux-armv7.tar.gz", "sha256": "79acdf47fbb408159c813ac03a7fe0f0e1ef22ec2cc157f2e1b206f4893a8ba1", "size": 5264289},
+    "linux-mips": {"archive": "adguardvpn-cli-1.7.12-linux-mips.tar.gz", "sha256": "afcd4b122614be71baf649b02b0142a74d18a5f2abb38372269840bc852ecf0a", "size": 5678397},
+    "linux-mipsle": {"archive": "adguardvpn-cli-1.7.12-linux-mipsel.tar.gz", "sha256": "b31cea759728fe5fa8dd9c1487a2679424370a1be6804632df77896ee19e4efe", "size": 5610869}
+  }
+}

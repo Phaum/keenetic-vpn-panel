@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Keenetic VPN Panel - Параметры</title>
+    <link rel="icon" href="/assets/logo.ico" type="image/x-icon" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body data-page="settings">
@@ -74,7 +75,7 @@
         <section class="panel">
           <form id="config-form" class="config-layout">
             <div class="config-main">
-              <section class="form-block">
+              <section class="form-block" id="routing-mode-config">
                 <div class="block-head">
                   <h4>Расписание автопроверки</h4>
                   <div class="section-actions">
@@ -188,7 +189,7 @@
 
               <section class="form-block">
                 <div class="block-head">
-                  <h4>Transparent proxy через redsocks</h4>
+                  <h4 id="routing-mode-title">Режим маршрутизации</h4>
                   <div class="section-actions">
                     <button class="ghost small" type="button" id="transparent-proxy-refresh-status">Статус</button>
                     <button class="ghost small" type="button" id="transparent-proxy-sync">Синхронизировать</button>
@@ -202,6 +203,7 @@
                       <option value="router-only">Router only</option>
                       <option value="transparent-redsocks">Transparent proxy через redsocks</option>
                       <option value="tun-policy">TUN policy routing</option>
+                      <option value="nfqueue">NFQUEUE / nfqws</option>
                     </select>
                   </label>
                   <label>
@@ -248,6 +250,21 @@
                     Путь к redsocks.conf
                     <input name="transparent_proxy.redsocks_config_path" type="text" required />
                   </label>
+                  <label class="checkbox-label full-span">
+                    <input name="transparent_proxy.udp_enabled" type="checkbox" />
+                    Перенаправлять UDP через redudp / TPROXY
+                  </label>
+                  <label>UDP listener port<input name="transparent_proxy.udp_listen_port" type="number" min="1" max="65535" required /></label>
+                  <label>UDP route table<input name="transparent_proxy.udp_route_table" type="number" min="1" required /></label>
+                  <label>UDP FWMark<input name="transparent_proxy.udp_fwmark" type="number" min="1" required /></label>
+                  <label>UDP rule priority<input name="transparent_proxy.udp_rule_priority" type="number" min="1" required /></label>
+                  <label class="checkbox-label full-span">
+                    <input name="transparent_proxy.dns_proxy_enabled" type="checkbox" />
+                    Перенаправлять DNS/UDP через VPN к заданному DNS-серверу
+                  </label>
+                  <label>DNS proxy listener<input name="transparent_proxy.dns_proxy_listen_port" type="number" min="1" max="65535" required /></label>
+                  <label>DNS upstream IPv4<input name="transparent_proxy.dns_upstream_ip" type="text" required /></label>
+                  <label>DNS upstream port<input name="transparent_proxy.dns_upstream_port" type="number" min="1" max="65535" required /></label>
                   <label class="full-span">
                     Целевые подсети LAN
                     <textarea name="transparent_proxy.target_subnets" rows="3" required></textarea>
@@ -329,15 +346,41 @@
                     Скрипт снятия правил
                     <input name="transparent_proxy.stop_script_path" type="text" required />
                   </label>
-                  <div class="hint-card full-span">
-                    Этот режим прозрачно перенаправляет TCP-трафик из выбранных LAN-подсетей в local
-                    redsocks, а тот уже отправляет соединения в listener adguardvpn-cli. Для UDP/DNS
-                    нужен отдельный слой. Если заданы destination CIDR или домены, редирект будет
-                    выполняться только для них; доменные правила требуют dnsmasq с поддержкой ipset.
-                    Для полноценного TCP+UDP используй режим TUN policy routing.
+                  <div class="hint-card full-span" id="routing-mode-hint">
+                    TCP перенаправляется через redsocks, обычный UDP — через redudp и TPROXY, а
+                    DNS/UDP — через отдельный redudp к указанному upstream DNS. Нужны SOCKS5 listener
+                    AdGuard VPN CLI с поддержкой UDP, команда ip и поддержка TPROXY ядром роутера.
+                    DNS/TCP остаётся на локальном резолвере. Если прошивка не поддерживает TPROXY,
+                    используй режим TUN policy routing.
                   </div>
                 </div>
                 <pre id="transparent-proxy-output" class="console compact-console">Transparent proxy ещё не загружен.</pre>
+              </section>
+
+              <section class="form-block" id="nfqueue-config-section">
+                <div class="block-head">
+                  <h4>NFQUEUE / nfqws</h4>
+                  <button class="ghost small" type="button" id="nfqueue-refresh-status">Проверить nfqws и дубли</button>
+                </div>
+                <div class="field-grid">
+                  <label>Команда nfqws<input name="nfqueue.binary_path" type="text" required /></label>
+                  <label>Номер очереди<input name="nfqueue.queue_num" type="number" min="1" max="65535" required /></label>
+                  <label>Имя цепочки<input name="nfqueue.chain_name" type="text" required /></label>
+                  <label>PID-файл<input name="nfqueue.pid_file" type="text" required /></label>
+                  <label>TCP-порты<input name="nfqueue.tcp_ports" type="text" placeholder="80,443" /></label>
+                  <label>UDP-порты<input name="nfqueue.udp_ports" type="text" placeholder="443" /></label>
+                  <label class="full-span">Стратегия TCP<input name="nfqueue.tcp_args" type="text" /></label>
+                  <label class="full-span">Стратегия UDP<input name="nfqueue.udp_args" type="text" /></label>
+                  <label class="full-span">Общие аргументы всех профилей nfqws<input name="nfqueue.extra_args" type="text" /></label>
+                  <label class="full-span">IP/CIDR для обработки<textarea name="nfqueue.include_ips" rows="4"></textarea></label>
+                  <label class="full-span">Исключения IP/CIDR<textarea name="nfqueue.exclude_ips" rows="4"></textarea></label>
+                  <label class="full-span">Домены для обработки<textarea name="nfqueue.include_domains" rows="4"></textarea></label>
+                  <label class="full-span">Исключения доменов<textarea name="nfqueue.exclude_domains" rows="4"></textarea></label>
+                  <label class="full-span">Каталог списков панели<input name="nfqueue.lists_dir" type="text" required /></label>
+                  <label class="checkbox-label full-span"><input name="nfqueue.allow_existing_service" type="checkbox" />Разрешить параллельную работу с обнаруженным сервисом nfqws</label>
+                  <div class="hint-card full-span">Панель использует собственную очередь и не изменяет файлы установленного nfqws. Перед применением сравниваются стандартные и указанные в конфигурации списки nfqws/nfqws2; совпадения и конфликты выводятся ниже. Аппаратное/flow offloading на роутере может обходить netfilter и NFQUEUE.</div>
+                </div>
+                <pre id="nfqueue-output" class="console compact-console">Проверка nfqws ещё не выполнялась.</pre>
               </section>
 
               <section class="form-block">

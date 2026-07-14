@@ -10,6 +10,7 @@ const vpnOutput = document.querySelector("#vpn-output");
 const vpnLocationSelect = document.querySelector("#vpn-location-select");
 const autostartOutput = document.querySelector("#autostart-output");
 const transparentProxyOutput = document.querySelector("#transparent-proxy-output");
+const nfqueueOutput = document.querySelector("#nfqueue-output");
 
 const fields = [
   "automation.enabled",
@@ -47,6 +48,15 @@ const fields = [
   "transparent_proxy.redsocks_bin",
   "transparent_proxy.redsocks_pid_file",
   "transparent_proxy.redsocks_config_path",
+  "transparent_proxy.udp_enabled",
+  "transparent_proxy.udp_listen_port",
+  "transparent_proxy.udp_route_table",
+  "transparent_proxy.udp_fwmark",
+  "transparent_proxy.udp_rule_priority",
+  "transparent_proxy.dns_proxy_enabled",
+  "transparent_proxy.dns_proxy_listen_port",
+  "transparent_proxy.dns_upstream_ip",
+  "transparent_proxy.dns_upstream_port",
   "transparent_proxy.iptables_path",
   "transparent_proxy.chain_name",
   "transparent_proxy.target_subnets",
@@ -67,6 +77,21 @@ const fields = [
   "transparent_proxy.dns_hijack_port",
   "transparent_proxy.rules_script_path",
   "transparent_proxy.stop_script_path",
+  "nfqueue.binary_path",
+  "nfqueue.queue_num",
+  "nfqueue.chain_name",
+  "nfqueue.tcp_ports",
+  "nfqueue.udp_ports",
+  "nfqueue.tcp_args",
+  "nfqueue.udp_args",
+  "nfqueue.extra_args",
+  "nfqueue.pid_file",
+  "nfqueue.include_ips",
+  "nfqueue.exclude_ips",
+  "nfqueue.include_domains",
+  "nfqueue.exclude_domains",
+  "nfqueue.lists_dir",
+  "nfqueue.allow_existing_service",
   "paths.lock_file",
   "paths.log_file",
   "paths.good_file",
@@ -123,6 +148,67 @@ function setFieldValue(name, value) {
       input.checked = Boolean(value);
     } else {
       input.value = value ?? "";
+    }
+  }
+}
+
+const routingModeFields = {
+  "transparent-redsocks": [
+    "transparent_proxy.proxy_type", "transparent_proxy.proxy_host", "transparent_proxy.proxy_port",
+    "transparent_proxy.listen_ip", "transparent_proxy.listen_port", "transparent_proxy.redsocks_bin",
+    "transparent_proxy.redsocks_pid_file", "transparent_proxy.redsocks_config_path", "transparent_proxy.chain_name",
+    "transparent_proxy.udp_enabled", "transparent_proxy.udp_listen_port", "transparent_proxy.udp_route_table",
+    "transparent_proxy.udp_fwmark", "transparent_proxy.udp_rule_priority", "transparent_proxy.dns_proxy_enabled",
+    "transparent_proxy.dns_proxy_listen_port", "transparent_proxy.dns_upstream_ip", "transparent_proxy.dns_upstream_port",
+  ],
+  "tun-policy": [
+    "transparent_proxy.chain_name", "transparent_proxy.destination_subnets", "transparent_proxy.destination_domains",
+    "transparent_proxy.ipset_path", "transparent_proxy.destination_subnet_set", "transparent_proxy.destination_domain_set",
+    "transparent_proxy.dnsmasq_ipset_config_path", "transparent_proxy.dnsmasq_restart_command", "transparent_proxy.ip_path",
+    "transparent_proxy.tun_interface", "transparent_proxy.tun_route_table", "transparent_proxy.tun_fwmark",
+    "transparent_proxy.tun_rule_priority", "transparent_proxy.dns_hijack_enabled", "transparent_proxy.dns_hijack_port",
+  ],
+};
+
+const commonRoutingFields = [
+  "transparent_proxy.iptables_path", "transparent_proxy.target_subnets", "transparent_proxy.bypass_subnets",
+  "transparent_proxy.rules_script_path", "transparent_proxy.stop_script_path",
+];
+
+function updateRoutingModeFields() {
+  if (!form) return;
+  const selector = form.elements.namedItem("transparent_proxy.mode");
+  if (!selector) return;
+  const mode = selector.value || "router-only";
+  const visible = new Set(mode === "router-only" ? [] : commonRoutingFields);
+  for (const name of routingModeFields[mode] || []) visible.add(name);
+  const managed = new Set([...commonRoutingFields, ...Object.values(routingModeFields).flat()]);
+  for (const name of managed) {
+    const input = form.elements.namedItem(name);
+    input?.closest("label")?.classList.toggle("mode-hidden", !visible.has(name));
+  }
+  const nfqueueSection = byId("nfqueue-config-section");
+  nfqueueSection?.classList.toggle("mode-hidden", mode !== "nfqueue");
+  const hint = byId("routing-mode-hint");
+  hint?.classList.toggle("mode-hidden", mode === "router-only" || mode === "nfqueue");
+  const titles = {
+    "router-only": "Управление AdGuard VPN CLI",
+    "transparent-redsocks": "Transparent proxy через redsocks",
+    "tun-policy": "TUN policy routing",
+    nfqueue: "NFQUEUE — общие сетевые параметры",
+  };
+  setText("routing-mode-title", titles[mode] || "Режим маршрутизации");
+  byId("transparent-proxy-sync")?.classList.toggle("mode-hidden", mode === "router-only");
+  byId("transparent-proxy-stop")?.classList.toggle("mode-hidden", mode === "router-only");
+
+  if (mode === "transparent-redsocks") {
+    const udpEnabled = Boolean(form.elements.namedItem("transparent_proxy.udp_enabled")?.checked);
+    const dnsEnabled = Boolean(form.elements.namedItem("transparent_proxy.dns_proxy_enabled")?.checked);
+    for (const name of ["transparent_proxy.udp_listen_port", "transparent_proxy.udp_route_table", "transparent_proxy.udp_fwmark", "transparent_proxy.udp_rule_priority"]) {
+      form.elements.namedItem(name)?.closest("label")?.classList.toggle("mode-hidden", !udpEnabled);
+    }
+    for (const name of ["transparent_proxy.dns_proxy_listen_port", "transparent_proxy.dns_upstream_ip", "transparent_proxy.dns_upstream_port"]) {
+      form.elements.namedItem(name)?.closest("label")?.classList.toggle("mode-hidden", !dnsEnabled);
     }
   }
 }
@@ -332,6 +418,7 @@ function buildConfigFromForm() {
     automation: {},
     autostart: {},
     transparent_proxy: {},
+    nfqueue: {},
     paths: {},
     logging: {},
     resources: { links: [] },
@@ -385,6 +472,7 @@ function fillConfig(config) {
   const resources = config.resources?.links ?? [];
   renderResourceEditor(resources);
   renderSidebarResources(resources);
+  updateRoutingModeFields();
 }
 
 async function loadConfig() {
@@ -566,7 +654,10 @@ function formatTransparentProxyStatusText(status) {
   lines.push(`Режим: ${status.mode || (status.enabled ? "transparent-redsocks" : "router-only")}`);
   lines.push(`Зависимости: ${status.available ? "доступны" : "не найдены"}`);
   if (status.mode === "transparent-redsocks") {
-    lines.push(`redsocks: ${status.running ? `запущен (PID ${status.pid || "-"})` : "остановлен"}`);
+    const modeStatus = status.mode_status || {};
+    lines.push(`redsocks: ${modeStatus.redsocks_running ? `запущен (PID ${modeStatus.redsocks_pid || "-"})` : "остановлен"}`);
+    if (modeStatus.udp_enabled) lines.push(`UDP/TPROXY: ${modeStatus.udp_rules_installed ? "правила применены" : "правила не применены"}`);
+    if (modeStatus.dns_proxy_enabled) lines.push(`DNS/UDP: ${modeStatus.dns_rules_installed ? "правила применены" : "правила не применены"}`);
   }
   lines.push(`Правила iptables: ${status.rules_installed ? "применены" : "не применены"}`);
   if (status.listener) {
@@ -634,6 +725,27 @@ async function loadTransparentProxyStatus() {
     setTransparentProxyMessage(formatTransparentProxyStatusText(status));
   }
   setText("transparent-proxy-summary", formatTransparentProxySummary(status));
+  return status;
+}
+
+async function loadNFQueueStatus() {
+  if (!nfqueueOutput) return null;
+  const status = await fetchJson("/api/nfqueue/status");
+  const lines = [
+    `nfqws: ${status.installed ? status.binary_path : "не найден"}`,
+    `Процесс панели: ${status.running ? `запущен (PID ${status.pid})` : "остановлен"}`,
+    `Очередь: ${status.queue_num}`,
+    `Сторонний сервис: ${status.existing_service ? "обнаружен" : "не обнаружен"}`,
+    `Найдено файлов списков: ${(status.sources || []).length}`,
+  ];
+  for (const source of status.sources || []) lines.push(`  ${source.kind}: ${source.path} (${source.count})`);
+  if ((status.warnings || []).length) {
+    lines.push("", "Предупреждения:");
+    for (const warning of status.warnings) lines.push(`⚠ ${warning}`);
+  } else {
+    lines.push("", "Дубли и конфликты не найдены.");
+  }
+  setConsole(nfqueueOutput, lines.join("\n"));
   return status;
 }
 
@@ -890,6 +1002,10 @@ function bindSettingsForm() {
     return;
   }
 
+  form.elements.namedItem("transparent_proxy.mode")?.addEventListener("change", updateRoutingModeFields);
+  form.elements.namedItem("transparent_proxy.udp_enabled")?.addEventListener("change", updateRoutingModeFields);
+  form.elements.namedItem("transparent_proxy.dns_proxy_enabled")?.addEventListener("change", updateRoutingModeFields);
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     setStatusMessage("Сохраняю настройки...");
@@ -1099,6 +1215,10 @@ function bindActions() {
     }
   });
 
+  bindClick("nfqueue-refresh-status", async () => {
+    try { await loadNFQueueStatus(); } catch (error) { setConsole(nfqueueOutput, error.message); }
+  });
+
   bindClick("transparent-proxy-sync", async () => {
     try {
       await saveCurrentConfig(false);
@@ -1206,6 +1326,7 @@ async function boot() {
       loadVpnLocations(),
       loadAutostartStatus(),
       loadTransparentProxyStatus(),
+      loadNFQueueStatus(),
     ]);
     if (actionOutput) {
       setStatusMessage("Панель готова к работе.");

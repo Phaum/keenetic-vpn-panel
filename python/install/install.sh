@@ -5,7 +5,7 @@ set -eu
 REPO_OWNER="${REPO_OWNER:-Phaum}"
 REPO_NAME="${REPO_NAME:-keenetic-vpn-panel}"
 BRANCH="${BRANCH:-master}"
-APP_DIR="${APP_DIR:-/opt/share/keenetic-vpn-panel}"
+APP_DIR="${APP_DIR:-/opt/share/keenetic-vpn-panel/python}"
 TMP_DIR="/opt/tmp/${REPO_NAME}-install.$$"
 ARCHIVE_URL="https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/${BRANCH}"
 INIT_SCRIPT_PATH="/opt/etc/init.d/S99keenetic-vpn-panel"
@@ -161,7 +161,11 @@ fi
 
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"
-cp -R "${EXTRACTED_DIR}/." "$APP_DIR/"
+cp -R "${EXTRACTED_DIR}/python/." "$APP_DIR/"
+mkdir -p "${APP_DIR}/.."
+rm -rf "${APP_DIR}/../web" "${APP_DIR}/../assets"
+cp -R "${EXTRACTED_DIR}/web" "${APP_DIR}/../web"
+cp -R "${EXTRACTED_DIR}/assets" "${APP_DIR}/../assets"
 DEFAULT_CONFIG_PATH="${TMP_DIR}/config.default.json"
 cp "${APP_DIR}/config.json" "$DEFAULT_CONFIG_PATH"
 
