@@ -20,15 +20,21 @@ CONNECT_TIMEOUT="${CONNECT_TIMEOUT:-20}"
 TRANSFER_TIMEOUT="${TRANSFER_TIMEOUT:-300}"
 DOWNLOAD_RETRIES="${DOWNLOAD_RETRIES:-2}"
 CURL_IP_FAMILY="${CURL_IP_FAMILY--4}"
+OPKG_TIMEOUT="${OPKG_TIMEOUT:-300}"
 
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT INT TERM
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
+run_opkg() {
+  if need_cmd timeout; then timeout "$OPKG_TIMEOUT" opkg "$@"
+  else opkg "$@"
+  fi
+}
 install_pkg_if_available() {
   PKG="$1"
-  opkg list-installed 2>/dev/null | grep -q "^${PKG} " && return 0
-  opkg info "$PKG" >/dev/null 2>&1 && opkg install "$PKG" || true
+  run_opkg list-installed 2>/dev/null | grep -q "^${PKG} " && return 0
+  run_opkg info "$PKG" >/dev/null 2>&1 && run_opkg install "$PKG" || true
 }
 download() {
   URL="$1"; DEST="$2"
@@ -51,7 +57,7 @@ fi
 [ "$APP_DIR" != "$OLD_APP_DIR" ] || { echo "Ошибка: APP_DIR и OLD_APP_DIR не должны совпадать." >&2; exit 1; }
 
 echo "Обновление индекса пакетов Entware..."
-opkg update
+run_opkg update || { echo "Ошибка: opkg update не завершился за ${OPKG_TIMEOUT} сек. или вернул ошибку." >&2; exit 1; }
 install_pkg_if_available ca-certificates
 if ! need_cmd curl && ! need_cmd wget; then install_pkg_if_available wget-ssl; fi
 install_pkg_if_available ip-full
