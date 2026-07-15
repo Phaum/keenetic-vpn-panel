@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -610,13 +609,31 @@ func clearLogs(c M) M {
 }
 func scheduleRestart(c M) M {
 	delay := 2
-	go func() {
-		time.Sleep(time.Duration(delay) * time.Second)
-		if runtime.GOOS != "windows" {
-			_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+	initPath := str(c, "autostart", "init_script_path")
+	method := "self-reexec"
+	var cmd *exec.Cmd
+	if info, err := os.Stat(initPath); err == nil && !info.IsDir() && info.Mode().Perm()&0111 != 0 {
+		method = "entware-init"
+		cmd = exec.Command("sh", "-c", `sleep "$1"; exec "$2" restart`, "restart-helper", strconv.Itoa(delay), initPath)
+	} else {
+		executable, err := os.Executable()
+		if err != nil {
+			return M{"success": false, "message": "Не удалось определить исполняемый файл панели: " + err.Error(), "executed_at": now()}
 		}
-	}()
-	return M{"success": true, "message": "Перезапуск панели запланирован через 2 сек.", "executed_at": now(), "restart_scheduled": true, "restart_method": "service-manager", "restart_delay_seconds": delay}
+		// A detached helper waits until the HTTP response has been sent, stops the
+		// current process, waits for the listening socket to close and execs a new
+		// copy in the same working directory. This also makes local development
+		// restartable when no Entware init script exists.
+		cmd = exec.Command("sh", "-c", `sleep "$1"; kill -TERM "$2" 2>/dev/null || true; COUNT=0; while kill -0 "$2" 2>/dev/null && [ "$COUNT" -lt 50 ]; do sleep 0.1; COUNT=$((COUNT+1)); done; cd "$3" || exit 1; exec "$4"`, "restart-helper", strconv.Itoa(delay), strconv.Itoa(os.Getpid()), baseDir, executable)
+	}
+	cmd.Dir = baseDir
+	cmd.Env = commandEnv()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return M{"success": false, "message": "Не удалось запустить helper перезапуска: " + err.Error(), "executed_at": now(), "restart_method": method}
+	}
+	_ = cmd.Process.Release()
+	return M{"success": true, "message": "Перезапуск панели запланирован через 2 сек.", "executed_at": now(), "restart_scheduled": true, "restart_method": method, "restart_delay_seconds": delay}
 }
 
 func main() {

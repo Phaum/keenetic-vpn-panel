@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalizeNetworks(t *testing.T) {
@@ -67,6 +68,33 @@ func TestConfigEndpoint(t *testing.T) {
 	if section(payload, "panel")["host"] != "127.0.0.1" {
 		t.Fatal("unexpected config response")
 	}
+}
+
+func TestScheduleRestartUsesEntwareInitScript(t *testing.T) {
+	tmp := t.TempDir()
+	marker := filepath.Join(tmp, "restarted")
+	initPath := filepath.Join(tmp, "S99panel")
+	body := "#!/bin/sh\nprintf '%s' \"$1\" > " + shellQuote(marker) + "\n"
+	if err := os.WriteFile(initPath, []byte(body), 0755); err != nil {
+		t.Fatal(err)
+	}
+	c := defaultConfig()
+	section(c, "autostart")["init_script_path"] = initPath
+	result := scheduleRestart(c)
+	if result["success"] != true || result["restart_method"] != "entware-init" {
+		t.Fatalf("unexpected restart result: %#v", result)
+	}
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(marker); err == nil {
+			if string(data) != "restart" {
+				t.Fatalf("unexpected init action: %q", data)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("restart helper did not invoke init script")
 }
 
 func TestAuthenticationMarkers(t *testing.T) {

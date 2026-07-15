@@ -211,7 +211,7 @@ NAME=%s
 START_SCRIPT=%s
 PID_FILE=%s
 start() { [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null && return 0; mkdir -p "$(dirname "$PID_FILE")"; "$START_SCRIPT" & echo $! > "$PID_FILE"; }
-stop() { [ -f "$PID_FILE" ] || return 0; PID="$(cat "$PID_FILE")"; kill "$PID" 2>/dev/null || true; COUNT=0; while kill -0 "$PID" 2>/dev/null && [ "$COUNT" -lt 10 ]; do sleep 1; COUNT=$((COUNT+1)); done; rm -f "$PID_FILE"; }
+stop() { [ -f "$PID_FILE" ] || return 0; PID="$(cat "$PID_FILE")"; kill "$PID" 2>/dev/null || true; COUNT=0; while kill -0 "$PID" 2>/dev/null && [ "$COUNT" -lt 10 ]; do sleep 1; COUNT=$((COUNT+1)); done; if kill -0 "$PID" 2>/dev/null; then kill -KILL "$PID" 2>/dev/null || true; sleep 1; fi; rm -f "$PID_FILE"; }
 case "$1" in start) start;; stop) stop;; restart) stop; start;; status) [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null;; *) echo "Usage: $0 {start|stop|restart|status}"; exit 1;; esac
 `, shellQuote(fmt.Sprint(a["service_name"])), shellQuote(fmt.Sprint(a["start_script_path"])), shellQuote(fmt.Sprint(a["pid_file"])))
 }
