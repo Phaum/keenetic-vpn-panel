@@ -18,7 +18,7 @@ go build -trimpath -ldflags="-s -w" -o keenetic-vpn-panel .
 Стабильная установка из GitHub Release:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/go-version/go/install/install.sh | sh
+curl -fL https://github.com/Phaum/keenetic-vpn-panel/releases/latest/download/keenetic-vpn-panel-install.sh | sh
 ```
 
 Установщик автоматически различает:

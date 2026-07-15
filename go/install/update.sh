@@ -2,11 +2,12 @@
 
 set -eu
 
-URL="${INSTALLER_URL:-https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/go-version/go/install/install.sh}"
+URL="${INSTALLER_URL:-https://github.com/Phaum/keenetic-vpn-panel/releases/latest/download/keenetic-vpn-panel-install.sh}"
 CONNECT_TIMEOUT="${CONNECT_TIMEOUT:-20}"
 TRANSFER_TIMEOUT="${TRANSFER_TIMEOUT:-180}"
 DOWNLOAD_RETRIES="${DOWNLOAD_RETRIES:-2}"
 CURL_IP_FAMILY="${CURL_IP_FAMILY--4}"
+CURL_PROXY="${CURL_PROXY:-}"
 UPDATE_SCRIPT="${TMPDIR:-/opt/tmp}/keenetic-vpn-panel-update.$$"
 
 cleanup() { rm -f "$UPDATE_SCRIPT"; }
@@ -15,10 +16,12 @@ mkdir -p "$(dirname "$UPDATE_SCRIPT")"
 
 echo "[1/2] Загрузка установщика Go-версии: $URL"
 if command -v curl >/dev/null 2>&1; then
-  curl $CURL_IP_FAMILY --fail --location --show-error --silent \
+  set -- $CURL_IP_FAMILY --fail --location --show-error --silent \
     --connect-timeout "$CONNECT_TIMEOUT" --max-time "$TRANSFER_TIMEOUT" \
     --retry "$DOWNLOAD_RETRIES" --retry-delay 2 \
-    --output "$UPDATE_SCRIPT" "$URL"
+    --output "$UPDATE_SCRIPT"
+  [ -z "$CURL_PROXY" ] || set -- "$@" --proxy "$CURL_PROXY"
+  curl "$@" "$URL"
 elif command -v wget >/dev/null 2>&1; then
   wget -T "$CONNECT_TIMEOUT" -t "$((DOWNLOAD_RETRIES + 1))" -O "$UPDATE_SCRIPT" "$URL"
 else

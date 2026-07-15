@@ -60,11 +60,19 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: keenetic-vpn-panel-*
           merge-multiple: true
+      - name: Package installer and source bundle
+        run: |
+          cp go/install/install.sh keenetic-vpn-panel-install.sh
+          tar --transform='s,^,keenetic-vpn-panel-source/,' \
+            -czf keenetic-vpn-panel-source.tar.gz go web assets
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             keenetic-vpn-panel-linux-*
+            keenetic-vpn-panel-install.sh
+            keenetic-vpn-panel-source.tar.gz

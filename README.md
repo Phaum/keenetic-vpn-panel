@@ -101,13 +101,13 @@ go run .
 Требуется установленный Entware с доступными `/opt` и `opkg`.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/go-version/go/install/install.sh | sh
+curl -fL https://github.com/Phaum/keenetic-vpn-panel/releases/latest/download/keenetic-vpn-panel-install.sh | sh
 ```
 
 Если `curl` отсутствует:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/Phaum/keenetic-vpn-panel/go-version/go/install/install.sh | sh
+wget -qO- https://github.com/Phaum/keenetic-vpn-panel/releases/latest/download/keenetic-vpn-panel-install.sh | sh
 ```
 
 Установщик:

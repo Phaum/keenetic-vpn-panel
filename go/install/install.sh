@@ -14,12 +14,13 @@ PID_FILE="${PID_FILE:-/opt/var/run/keenetic-vpn-panel.pid}"
 SHELL_BIN="${SHELL_BIN:-/opt/bin/sh}"
 TMP_DIR="${TMPDIR:-/opt/tmp}/${REPO_NAME}-go-install.$$"
 BACKUP_ROOT="${BACKUP_ROOT:-${APP_ROOT}/migration-backups}"
-SOURCE_URL="${SOURCE_URL:-https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/${BRANCH}}"
 RELEASE_BASE="${RELEASE_BASE:-https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download}"
+SOURCE_URL="${SOURCE_URL:-${RELEASE_BASE}/keenetic-vpn-panel-source.tar.gz}"
 CONNECT_TIMEOUT="${CONNECT_TIMEOUT:-20}"
 TRANSFER_TIMEOUT="${TRANSFER_TIMEOUT:-300}"
 DOWNLOAD_RETRIES="${DOWNLOAD_RETRIES:-2}"
 CURL_IP_FAMILY="${CURL_IP_FAMILY--4}"
+CURL_PROXY="${CURL_PROXY:-}"
 OPKG_TIMEOUT="${OPKG_TIMEOUT:-300}"
 
 cleanup() { rm -rf "$TMP_DIR"; }
@@ -40,10 +41,12 @@ download() {
   URL="$1"; DEST="$2"
   echo "Загрузка: $URL"
   if need_cmd curl; then
-    curl $CURL_IP_FAMILY --fail --location --show-error --silent \
+    set -- $CURL_IP_FAMILY --fail --location --show-error --silent \
       --connect-timeout "$CONNECT_TIMEOUT" --max-time "$TRANSFER_TIMEOUT" \
       --retry "$DOWNLOAD_RETRIES" --retry-delay 2 \
-      --output "$DEST" "$URL"
+      --output "$DEST"
+    [ -z "$CURL_PROXY" ] || set -- "$@" --proxy "$CURL_PROXY"
+    curl "$@" "$URL"
   elif need_cmd wget; then
     wget -T "$CONNECT_TIMEOUT" -t "$((DOWNLOAD_RETRIES + 1))" -O "$DEST" "$URL"
   else echo "Ошибка: для загрузки требуется curl или wget." >&2; exit 1
@@ -79,7 +82,7 @@ esac
 mkdir -p "$TMP_DIR" "$APP_ROOT" "$BACKUP_ROOT" "$(dirname "$INIT_SCRIPT")" "$(dirname "$LOG_FILE")" "$(dirname "$PID_FILE")"
 
 SOURCE_ARCHIVE="${TMP_DIR}/source.tar.gz"
-echo "Загрузка исходных файлов ветки ${BRANCH}..."
+echo "Загрузка source bundle Go-версии..."
 download "$SOURCE_URL" "$SOURCE_ARCHIVE"
 tar -tzf "$SOURCE_ARCHIVE" >/dev/null 2>&1 || { echo "Ошибка: архив проекта повреждён." >&2; exit 1; }
 SOURCE_ROOT="$(tar -tzf "$SOURCE_ARCHIVE" | head -n 1 | cut -d/ -f1)"
