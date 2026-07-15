@@ -16,6 +16,10 @@ TMP_DIR="${TMPDIR:-/opt/tmp}/${REPO_NAME}-go-install.$$"
 BACKUP_ROOT="${BACKUP_ROOT:-${APP_ROOT}/migration-backups}"
 SOURCE_URL="${SOURCE_URL:-https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/${BRANCH}}"
 RELEASE_BASE="${RELEASE_BASE:-https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download}"
+CONNECT_TIMEOUT="${CONNECT_TIMEOUT:-20}"
+TRANSFER_TIMEOUT="${TRANSFER_TIMEOUT:-300}"
+DOWNLOAD_RETRIES="${DOWNLOAD_RETRIES:-2}"
+CURL_IP_FAMILY="${CURL_IP_FAMILY--4}"
 
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT INT TERM
@@ -28,8 +32,14 @@ install_pkg_if_available() {
 }
 download() {
   URL="$1"; DEST="$2"
-  if need_cmd curl; then curl -fsSL "$URL" -o "$DEST"
-  elif need_cmd wget; then wget -O "$DEST" "$URL"
+  echo "Загрузка: $URL"
+  if need_cmd curl; then
+    curl $CURL_IP_FAMILY --fail --location --show-error --silent \
+      --connect-timeout "$CONNECT_TIMEOUT" --max-time "$TRANSFER_TIMEOUT" \
+      --retry "$DOWNLOAD_RETRIES" --retry-delay 2 \
+      --output "$DEST" "$URL"
+  elif need_cmd wget; then
+    wget -T "$CONNECT_TIMEOUT" -t "$((DOWNLOAD_RETRIES + 1))" -O "$DEST" "$URL"
   else echo "Ошибка: для загрузки требуется curl или wget." >&2; exit 1
   fi
 }
@@ -40,6 +50,7 @@ if [ ! -d /opt ] || ! need_cmd opkg; then
 fi
 [ "$APP_DIR" != "$OLD_APP_DIR" ] || { echo "Ошибка: APP_DIR и OLD_APP_DIR не должны совпадать." >&2; exit 1; }
 
+echo "Обновление индекса пакетов Entware..."
 opkg update
 install_pkg_if_available ca-certificates
 if ! need_cmd curl && ! need_cmd wget; then install_pkg_if_available wget-ssl; fi
@@ -62,6 +73,7 @@ esac
 mkdir -p "$TMP_DIR" "$APP_ROOT" "$BACKUP_ROOT" "$(dirname "$INIT_SCRIPT")" "$(dirname "$LOG_FILE")" "$(dirname "$PID_FILE")"
 
 SOURCE_ARCHIVE="${TMP_DIR}/source.tar.gz"
+echo "Загрузка исходных файлов ветки ${BRANCH}..."
 download "$SOURCE_URL" "$SOURCE_ARCHIVE"
 tar -tzf "$SOURCE_ARCHIVE" >/dev/null 2>&1 || { echo "Ошибка: архив проекта повреждён." >&2; exit 1; }
 SOURCE_ROOT="$(tar -tzf "$SOURCE_ARCHIVE" | head -n 1 | cut -d/ -f1)"
@@ -72,8 +84,10 @@ EXTRACTED="${TMP_DIR}/${SOURCE_ROOT}"
 BINARY_ASSET="keenetic-vpn-panel-linux-${ASSET_ARCH}"
 BINARY="${TMP_DIR}/${BINARY_ASSET}"
 if [ -n "${LOCAL_BINARY:-}" ]; then
+  echo "Используется локальный бинарник: $LOCAL_BINARY"
   cp "$LOCAL_BINARY" "$BINARY"
 else
+  echo "Загрузка release-бинарника для ${ASSET_ARCH}..."
   download "${RELEASE_BASE}/${BINARY_ASSET}" "$BINARY"
   download "${RELEASE_BASE}/${BINARY_ASSET}.sha256" "${BINARY}.sha256"
   need_cmd sha256sum || { echo "Ошибка: требуется sha256sum." >&2; exit 1; }
@@ -123,6 +137,7 @@ rollback() {
 }
 
 rm -rf "$APP_DIR"
+echo "Установка файлов Go-панели..."
 mkdir -p "$APP_DIR" "${APP_DIR}/deploy/entware"
 cp -R "${EXTRACTED}/go/." "$APP_DIR/" || rollback
 cp "$BINARY" "${APP_DIR}/keenetic-vpn-panel" || rollback
@@ -157,6 +172,7 @@ EOF
 chmod 0755 "${APP_DIR}/deploy/entware/start_vpn_panel.sh" "$INIT_SCRIPT"
 
 "$INIT_SCRIPT" start || rollback
+echo "Сервис запущен, выполняется health check..."
 sleep 2
 "$INIT_SCRIPT" status || rollback
 
